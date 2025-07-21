@@ -23,7 +23,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 s3_manager = S3ParquetManager()
 s3_video_manager = S3VideoManager()
 
-# CORS配置
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -1,40 +1,40 @@
-# Annotation Platform - 简化版
+# Annotation Platform - Simplified Version
 
-基于Web的GPS数据可视化和视频截取平台
+A web-based GPS data visualization and video clipping platform.
 
-## 快速开始
+## Quick Start
 
-### 使用 Docker（推荐）
+### Using Docker (Recommended)
 
 ```bash
-# 1. 配置AWS凭证
-# 编辑 .env 文件，填入你的AWS凭证
+# 1. Configure AWS credentials
+# Edit the .env file and fill in your AWS credentials
 
-# 2. 启动应用
-docker-compose up -d
+# 2. Start the application
+Docker-compose up -d
 
-# 3. 访问应用
-# 前端: http://localhost:3000
-# 后端: http://localhost:8000
+# 3. Access the application
+# Frontend: http://localhost:3000
+# Backend: http://localhost:8000
 ```
 
-### 手动启动
+### Manual Startup
 
 ```bash
-# 后端
+# Backend
 cd backend
 pip install -r requirements.txt
 python main.py
 
-# 前端
+# Frontend
 cd frontend
 npm install
 npm start
 ```
 
-## 功能
+## Features
 
-- S3数据连接
-- GPS轨迹可视化
-- 视频时间戳截取
-- 简洁的用户界面
+- S3 data connection
+- GPS trajectory visualization
+- Video timestamp clipping
+- Simple user interface
