@@ -1,0 +1,32 @@
+# Node.js
+frontend/node_modules/
+frontend/package-lock.json
+
+# Python
+backend/__pycache__/
+*.pyc
+
+# VSCode/IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+*.env
+
+# Video and frame cache
+saved_video/
+
+
+# Docker
+**/Dockerfile
+
+# Logs
+*.log
+
+# Other
+*.swp 

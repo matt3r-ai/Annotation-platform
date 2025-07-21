@@ -1,0 +1,169 @@
+/* Object Detection Tool Styles */
+.object-detection-tool {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+  color: #ffffff;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-header {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2rem;
+  text-align: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+}
+
+.back-button {
+  position: absolute;
+  left: 2rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.9rem;
+}
+
+.back-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.tool-header h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 2.5rem;
+  font-weight: 300;
+  background: linear-gradient(45deg, #64b5f6, #42a5f5);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.tool-header p {
+  margin: 0;
+  color: #b0b0b0;
+  font-size: 1.1rem;
+}
+
+.tool-layout {
+  display: flex;
+  flex: 1;
+  gap: 1rem;
+  padding: 1rem;
+  height: calc(100vh - 120px);
+}
+
+.left-panel {
+  width: 300px;
+  flex-shrink: 0;
+}
+
+.center-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-panel {
+  width: 300px;
+  flex-shrink: 0;
+}
+
+.bottom-panel {
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.no-video {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #888;
+  text-align: center;
+}
+
+.no-video span {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.no-video h3 {
+  margin: 0 0 0.5rem 0;
+  color: #64b5f6;
+  font-size: 1.5rem;
+}
+
+.no-video p {
+  margin: 0;
+  color: #b0b0b0;
+  font-size: 1rem;
+}
+
+
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .tool-layout {
+    flex-direction: column;
+    height: auto;
+  }
+  
+  .left-panel,
+  .right-panel {
+    width: 100%;
+  }
+  
+  .center-panel {
+    min-height: 400px;
+  }
+}
+
+@media (max-width: 768px) {
+  .tool-header {
+    padding: 1.5rem;
+  }
+  
+  .tool-header h1 {
+    font-size: 2rem;
+  }
+  
+  .back-button {
+    position: static;
+    transform: none;
+    margin-bottom: 1rem;
+  }
+  
+  .tool-layout {
+    padding: 0.5rem;
+    gap: 0.5rem;
+  }
+  
+  .left-panel,
+  .right-panel {
+    width: 100%;
+  }
+  
+  .center-panel {
+    min-height: 300px;
+  }
+}
+
+@media (max-width: 480px) {
+  .tool-header h1 {
+    font-size: 1.5rem;
+  }
+  
+  .tool-layout {
+    padding: 0.25rem;
+  }
+} 

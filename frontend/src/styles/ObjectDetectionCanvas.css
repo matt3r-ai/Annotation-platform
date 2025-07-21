@@ -1,0 +1,65 @@
+/* Object Detection Canvas Styles */
+.object-detection-canvas {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1a1a2e;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.canvas-container {
+  position: relative;
+  flex: 1;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.detection-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  cursor: crosshair;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.canvas-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.frame-info {
+  color: #64b5f6;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.detection-info {
+  color: #4caf50;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+/* Canvas Drawing Styles */
+.detection-canvas:active {
+  cursor: crosshair;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .canvas-controls {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .detection-canvas {
+    width: 100%;
+    height: auto;
+  }
+} 
