@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
+import ReactDOM from 'react-dom';
 import { s3VideoAPI } from '../services/api';
+import '../styles/App.css';
 
 const ObjectDetectionTool = () => {
   const [dataSource, setDataSource] = useState('local');
@@ -33,16 +35,148 @@ const ObjectDetectionTool = () => {
   // --- BOX ANNOTATION CORE LOGIC REWRITE START ---
 
   // State for boxes, selected box, and interaction mode
-  const [boxes, setBoxes] = React.useState([]); // [{id, x, y, w, h}] in image natural coordinates
+  const [frameBoxes, setFrameBoxes] = React.useState({}); // {frameIndex: [boxes]}
+  const [boxes, setBoxes] = React.useState([]); // 当前帧的 boxes
   const [selectedId, setSelectedId] = React.useState(null);
   const [mode, setMode] = React.useState('idle'); // idle | drawing | moving | resizing
   const [drawStart, setDrawStart] = React.useState(null); // {x, y} in image coords
   const [moveStart, setMoveStart] = React.useState(null); // {x, y, box}
   const [resizeStart, setResizeStart] = React.useState(null); // {x, y, box, handle}
 
+  // --- ZOOM STATE MANAGEMENT ---
+  const [zoom, setZoom] = React.useState(1); // 缩放比例
+  const [zoomCenter, setZoomCenter] = React.useState({ x: 0, y: 0 }); // 缩放中心点
+
+  // --- UNDO/REDO SYSTEM ---
+  const [history, setHistory] = React.useState([]); // 操作历史
+  const [historyIndex, setHistoryIndex] = React.useState(-1); // 当前历史位置
+  const [maxHistorySize] = React.useState(50); // 最大历史记录数
+
+  // 保存当前状态到历史记录
+  const saveToHistory = React.useCallback((action, description) => {
+    setHistory(prev => {
+      const currentState = {
+        frameBoxes: JSON.parse(JSON.stringify(frameBoxes)),
+        selectedId,
+        action,
+        description,
+        timestamp: Date.now()
+      };
+
+      // 移除当前位置之后的历史记录
+      const newHistory = prev.slice(0, historyIndex + 1);
+      // 添加新状态
+      newHistory.push(currentState);
+      // 限制历史记录大小
+      if (newHistory.length > maxHistorySize) {
+        newHistory.shift();
+      }
+      return newHistory;
+    });
+    setHistoryIndex(prev => Math.min(prev + 1, maxHistorySize - 1));
+  }, [frameBoxes, selectedId, historyIndex, maxHistorySize]);
+
+  // 撤回操作
+  const undo = React.useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      const previousState = history[newIndex];
+      setFrameBoxes(previousState.frameBoxes);
+      setSelectedId(previousState.selectedId);
+      setHistoryIndex(newIndex);
+      // 更新当前帧的 boxes
+      if (previousState.frameBoxes[currentFrameIndex]) {
+        setBoxes(previousState.frameBoxes[currentFrameIndex]);
+      } else {
+        setBoxes([]);
+      }
+    }
+  }, [history, historyIndex, currentFrameIndex]);
+
+  // 重做操作
+  const redo = React.useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      const nextState = history[newIndex];
+      setFrameBoxes(nextState.frameBoxes);
+      setSelectedId(nextState.selectedId);
+      setHistoryIndex(newIndex);
+      // 更新当前帧的 boxes
+      if (nextState.frameBoxes[currentFrameIndex]) {
+        setBoxes(nextState.frameBoxes[currentFrameIndex]);
+      } else {
+        setBoxes([]);
+      }
+    }
+  }, [history, historyIndex, currentFrameIndex]);
+
+  // 键盘事件处理
+  React.useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ctrl+Z: 撤回
+      if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      }
+      // Ctrl+Y 或 Ctrl+Shift+Z: 重做
+      if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
+        e.preventDefault();
+        redo();
+      }
+      // Delete: 删除选中的框
+      if (e.key === 'Delete' && selectedId) {
+        e.preventDefault();
+        handleDeleteSelectedBox();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo, selectedId]);
+
+  // 初始化历史记录
+  React.useEffect(() => {
+    if (history.length === 0) {
+      saveToHistory('init', '初始化');
+    }
+  }, []);
+
+  // 切换帧时，自动加载 boxes
+  React.useEffect(() => {
+    // 如果新帧有 box，直接加载
+    if (frameBoxes[currentFrameIndex]) {
+      setBoxes(frameBoxes[currentFrameIndex]);
+    } else {
+      // 没有则向前查找最近有标注的帧，拷贝其 box 作为初始值
+      let found = false;
+      for (let i = currentFrameIndex - 1; i >= 0; i--) {
+        if (frameBoxes[i] && frameBoxes[i].length > 0) {
+          // 深拷贝并生成新 id
+          const prevBoxes = frameBoxes[i].map(b => ({ ...b, id: Date.now() + Math.random() }));
+          setBoxes(prevBoxes);
+          setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: prevBoxes }));
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        setBoxes([]);
+      }
+    }
+    setSelectedId(null);
+    // eslint-disable-next-line
+  }, [currentFrameIndex]);
+
+  // boxes 变化时，自动保存到 frameBoxes
+  React.useEffect(() => {
+    setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: boxes }));
+    // eslint-disable-next-line
+  }, [boxes, currentFrameIndex]);
+
   // --- IMAGE DIMENSION STATE ---
   const [naturalWidth, setNaturalWidth] = React.useState(1280); // default fallback
   const [naturalHeight, setNaturalHeight] = React.useState(720);
+  const imgRef = React.useRef(null);
 
   // When frame changes, preload image and set natural size
   React.useEffect(() => {
@@ -55,29 +189,108 @@ const ObjectDetectionTool = () => {
     img.src = frameUrls[currentFrameIndex];
   }, [frameUrls, currentFrameIndex]);
 
-  // --- getImgInfo now uses canvasRef and state ---
+  // 获取 <img> 的实际显示区域
+  function getImgRect() {
+    if (!imgRef.current) return null;
+    return imgRef.current.getBoundingClientRect();
+  }
+
+  // 固定图片尺寸
+  const FIXED_NATURAL_WIDTH = 1280;
+  const FIXED_NATURAL_HEIGHT = 960;
+
+  // getImgInfo 现在基于固定naturalWidth/Height，并考虑缩放
   function getImgInfo() {
-    const div = canvasRef.current;
-    if (!div) return null;
-    const rect = div.getBoundingClientRect();
+    if (!canvasRef.current || !imgRef.current) return null;
+  
+    const canvasRect = canvasRef.current.getBoundingClientRect();
+    const imgElement = imgRef.current;
+  
+    const naturalWidth = imgElement.naturalWidth;
+    const naturalHeight = imgElement.naturalHeight;
+  
+    const canvasWidth = canvasRect.width;
+    const canvasHeight = canvasRect.height;
+  
+    const aspectImage = naturalWidth / naturalHeight;
+    const aspectCanvas = canvasWidth / canvasHeight;
+  
+    let displayWidth, displayHeight, offsetX, offsetY;
+  
+    if (aspectImage > aspectCanvas) {
+      // 图像更宽，宽度填满
+      displayWidth = canvasWidth;
+      displayHeight = canvasWidth / aspectImage;
+      offsetX = 0;
+      offsetY = (canvasHeight - displayHeight) / 2;
+    } else {
+      // 图像更高，高度填满
+      displayHeight = canvasHeight;
+      displayWidth = canvasHeight * aspectImage;
+      offsetY = 0;
+      offsetX = (canvasWidth - displayWidth) / 2;
+    }
+
+    // 应用缩放 - 图片使用 transform: scale()，所以这里需要计算缩放后的实际尺寸
+    const scaledDisplayWidth = displayWidth * zoom;
+    const scaledDisplayHeight = displayHeight * zoom;
+    
+    // 由于图片使用 transform: scale() 且 transformOrigin: 'center center'
+    // 缩放后的偏移量需要重新计算
+    const scaledOffsetX = offsetX - (scaledDisplayWidth - displayWidth) / 2;
+    const scaledOffsetY = offsetY - (scaledDisplayHeight - displayHeight) / 2;
+  
     return {
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
+      left: canvasRect.left + scaledOffsetX, // ← 这是图像实际显示区域的左上角（相对屏幕）
+      top: canvasRect.top + scaledOffsetY,
+      width: scaledDisplayWidth,
+      height: scaledDisplayHeight,
       naturalWidth,
       naturalHeight,
-      scaleX: rect.width / naturalWidth,
-      scaleY: rect.height / naturalHeight,
+      scaleX: scaledDisplayWidth / naturalWidth,
+      scaleY: scaledDisplayHeight / naturalHeight,
+      offsetX: scaledOffsetX,
+      offsetY: scaledOffsetY,
+      zoom
     };
   }
+
+  // 滚轮缩放处理函数
+  function handleWheel(e) {
+    e.preventDefault();
+    
+    const info = getImgInfo();
+    if (!info) return;
+
+    // 获取鼠标在画布上的位置
+    const canvasRect = canvasRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - canvasRect.left;
+    const mouseY = e.clientY - canvasRect.top;
+
+    // 计算缩放前的图像坐标
+    const oldImgX = (mouseX - info.offsetX) / info.scaleX;
+    const oldImgY = (mouseY - info.offsetY) / info.scaleY;
+
+    // 计算新的缩放比例
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(0.1, Math.min(zoom * delta, 5)); // 限制缩放范围 0.1x - 5x
+
+    // 更新缩放状态
+    setZoom(newZoom);
+  }
+
+  // 重置缩放
+  function resetZoom() {
+    setZoom(1);
+  }
+  
 
   // Mouse event handlers
   function handleImgMouseDown(e) {
     const info = getImgInfo();
     if (!info) return;
-    const x = (e.clientX - info.left) / info.scaleX;
-    const y = (e.clientY - info.top) / info.scaleY;
+    const x = ((e.clientX - info.left) / info.scaleX);
+    const y = ((e.clientY - info.top) / info.scaleY);
     // Check if on handle
     if (selectedId) {
       const sel = boxes.find(b => b.id === selectedId);
@@ -104,8 +317,8 @@ const ObjectDetectionTool = () => {
   function handleImgMouseMove(e) {
     const info = getImgInfo();
     if (!info) return;
-    const x = (e.clientX - info.left) / info.scaleX;
-    const y = (e.clientY - info.top) / info.scaleY;
+    const x = ((e.clientX - info.left) / info.scaleX);
+    const y = ((e.clientY - info.top) / info.scaleY);
     if (mode === 'drawing' && drawStart) {
       // Preview box
       const newBox = {
@@ -136,8 +349,8 @@ const ObjectDetectionTool = () => {
   function handleImgMouseUp(e) {
     const info = getImgInfo();
     if (!info) return;
-    const x = (e.clientX - info.left) / info.scaleX;
-    const y = (e.clientY - info.top) / info.scaleY;
+    const x = ((e.clientX - info.left) / info.scaleX);
+    const y = ((e.clientY - info.top) / info.scaleY);
     if (mode === 'drawing' && drawStart) {
       const w = Math.abs(drawStart.x - x);
       const h = Math.abs(drawStart.y - y);
@@ -149,11 +362,19 @@ const ObjectDetectionTool = () => {
           w,
           h,
         };
-        setBoxes(bs => bs.filter(b => b.id !== 'preview').concat(newBox));
+        setBoxes(bs => {
+          const newBoxes = bs.filter(b => b.id !== 'preview').concat(newBox);
+          // 保存到历史记录
+          setTimeout(() => saveToHistory('draw', `绘制框 ${newBox.id}`), 0);
+          return newBoxes;
+        });
         setSelectedId(newBox.id);
       } else {
         setBoxes(bs => bs.filter(b => b.id !== 'preview'));
       }
+    } else if (mode === 'moving' || mode === 'resizing') {
+      // 移动或调整大小操作完成后保存到历史记录
+      setTimeout(() => saveToHistory('modify', `${mode === 'moving' ? '移动' : '调整大小'} 框 ${selectedId}`), 0);
     }
     setMode('idle');
     setDrawStart(null);
@@ -164,8 +385,8 @@ const ObjectDetectionTool = () => {
   function handleImgDoubleClick(e) {
     const info = getImgInfo();
     if (!info) return;
-    const x = (e.clientX - info.left) / info.scaleX;
-    const y = (e.clientY - info.top) / info.scaleY;
+    const x = ((e.clientX - info.left) / info.scaleX);
+    const y = ((e.clientY - info.top) / info.scaleY);
     // Select box if clicked inside
     const found = boxes.find(b => pointInBox(b, x, y));
     if (found) setSelectedId(found.id);
@@ -226,8 +447,8 @@ const ObjectDetectionTool = () => {
   function handleCanvasClick(e) {
     const info = getImgInfo();
     if (!info) return;
-    const x = (e.clientX - info.left) / info.scaleX;
-    const y = (e.clientY - info.top) / info.scaleY;
+    const x = ((e.clientX - info.left) / info.scaleX);
+    const y = ((e.clientY - info.top) / info.scaleY);
     // Find topmost box under mouse
     const found = [...boxes].reverse().find(b => pointInBox(b, x, y));
     if (found) {
@@ -240,8 +461,11 @@ const ObjectDetectionTool = () => {
   // 2. Add delete function
   function handleDeleteSelectedBox() {
     if (!selectedId) return;
+    const deletedBox = boxes.find(b => b.id === selectedId);
     setBoxes(bs => bs.filter(b => b.id !== selectedId));
     setSelectedId(null);
+    // 保存删除操作到历史记录
+    setTimeout(() => saveToHistory('delete', `删除框 ${selectedId}`), 0);
   }
 
   // 3. In the annotation canvas div, add onClick
@@ -269,7 +493,6 @@ const ObjectDetectionTool = () => {
   // 全局鼠标事件处理，确保绘制状态正确重置
   React.useEffect(() => {
     const handleGlobalMouseUp = (e) => {
-      console.log('全局 MouseUp 触发'); // 调试日志
       if (isDrawing) {
         console.log('全局 MouseUp 重置绘制状态'); // 调试日志
         // 如果有当前框，尝试保存
@@ -306,6 +529,7 @@ const ObjectDetectionTool = () => {
       if (isDrawing && startPoint) {
         // 如果鼠标移出图片区域，停止绘制
         const imageElement = document.querySelector('img[src*="frame"]');
+
         if (imageElement) {
           const rect = imageElement.getBoundingClientRect();
           if (e.clientX < rect.left || e.clientX > rect.right || 
@@ -355,24 +579,6 @@ const ObjectDetectionTool = () => {
         setKeyIds(response.data.key_ids || []);
       } catch (error) {
         setKeyIds([]);
-      }
-    }
-  };
-
-  const handleKeyIdChange = async (keyId) => {
-    setSelectedKeyId(keyId);
-    setS3Videos([]);
-    setS3VideoUrl('');
-    if (keyId) {
-      try {
-        const response = await s3VideoAPI.getFrontVideos(selectedOrgId, keyId);
-        setS3Videos(response.data.videos || []);
-        if (response.data.videos && response.data.videos.length > 0) {
-          setCurrentS3VideoIndex(0);
-          loadS3Video(response.data.videos[0]);
-        }
-      } catch (error) {
-        setS3Videos([]);
       }
     }
   };
@@ -428,196 +634,7 @@ const ObjectDetectionTool = () => {
     }
   };
 
-  // 标注相关函数
-  // 简化的鼠标事件处理
-  const handleMouseDown = (e) => {
-    const rect = e.target.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    // 获取图片的实际显示尺寸
-    const img = e.target;
-    const imgRect = img.getBoundingClientRect();
-    const imgNaturalWidth = img.naturalWidth;
-    const imgNaturalHeight = img.naturalHeight;
-    const imgDisplayWidth = imgRect.width;
-    const imgDisplayHeight = imgRect.height;
-    
-    // 计算缩放比例
-    const scaleX = imgNaturalWidth / imgDisplayWidth;
-    const scaleY = imgNaturalHeight / imgDisplayHeight;
-    
-    // 将鼠标坐标转换为图片坐标系
-    const imgX = x * scaleX;
-    const imgY = y * scaleY;
-    
-    // 检查是否点击了现有框
-    const clickedBox = (boundingBoxes[currentFrameIndex] || []).find(box => {
-      return imgX >= box.x1 && imgX <= box.x2 && imgY >= box.y1 && imgY <= box.y2;
-    });
-    
-    if (clickedBox) {
-      // 开始调整大小 - 无论点击框的哪个位置
-      setIsResizing(true);
-      setSelectedId(clickedBox.id);
-      setResizeStartPoint({ x: e.clientX, y: e.clientY });
-      setOriginalBox({ ...clickedBox });
-      return;
-    }
-    
-    // 开始绘制新框
-    setIsDrawing(true);
-    setStartPoint({ x: imgX, y: imgY });
-    setCurrentBox({ x1: imgX, y1: imgY, x2: imgX, y2: imgY });
-  };
 
-  const handleMouseMove = (e) => {
-    const rect = e.target.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    // 获取图片的实际显示尺寸
-    const img = e.target;
-    const imgRect = img.getBoundingClientRect();
-    const imgNaturalWidth = img.naturalWidth;
-    const imgNaturalHeight = img.naturalHeight;
-    const imgDisplayWidth = imgRect.width;
-    const imgDisplayHeight = imgRect.height;
-    
-    // 计算缩放比例
-    const scaleX = imgNaturalWidth / imgDisplayWidth;
-    const scaleY = imgNaturalHeight / imgDisplayHeight;
-    
-    // 将鼠标坐标转换为图片坐标系
-    const imgX = x * scaleX;
-    const imgY = y * scaleY;
-    
-    // 处理绘制新框
-    if (isDrawing && startPoint) {
-      setCurrentBox({
-        x1: Math.min(startPoint.x, imgX),
-        y1: Math.min(startPoint.y, imgY),
-        x2: Math.max(startPoint.x, imgX),
-        y2: Math.max(startPoint.y, imgY)
-      });
-    }
-    
-    // 处理调整大小 - 实时响应鼠标位置
-    if (isResizing && selectedId && resizeStartPoint && originalBox) {
-      const deltaX = e.clientX - resizeStartPoint.x;
-      const deltaY = e.clientY - resizeStartPoint.y;
-      
-      let updatedBox = { ...originalBox };
-      
-      // 根据鼠标在框内的相对位置来决定调整方式
-      const boxWidth = originalBox.x2 - originalBox.x1;
-      const boxHeight = originalBox.y2 - originalBox.y1;
-      const mouseXInBox = (imgX - originalBox.x1) / boxWidth;
-      const mouseYInBox = (imgY - originalBox.y1) / boxHeight;
-      
-      // 根据鼠标在框内的位置调整框的大小
-      if (mouseXInBox < 0.5) {
-        // 鼠标在左半边，调整左边界
-        updatedBox.x1 = originalBox.x1 + (deltaX * scaleX);
-      } else {
-        // 鼠标在右半边，调整右边界
-        updatedBox.x2 = originalBox.x2 + (deltaX * scaleX);
-      }
-      
-      if (mouseYInBox < 0.5) {
-        // 鼠标在上半边，调整上边界
-        updatedBox.y1 = originalBox.y1 + (deltaY * scaleY);
-      } else {
-        // 鼠标在下半边，调整下边界
-        updatedBox.y2 = originalBox.y2 + (deltaY * scaleY);
-      }
-      
-      // 边界检查
-      const minSize = 10;
-      const maxX = imgNaturalWidth;
-      const maxY = imgNaturalHeight;
-      
-      if (updatedBox.x2 - updatedBox.x1 < minSize) {
-        if (mouseXInBox < 0.5) updatedBox.x1 = updatedBox.x2 - minSize;
-        else updatedBox.x2 = updatedBox.x1 + minSize;
-      }
-      if (updatedBox.y2 - updatedBox.y1 < minSize) {
-        if (mouseYInBox < 0.5) updatedBox.y1 = updatedBox.y2 - minSize;
-        else updatedBox.y2 = updatedBox.y1 + minSize;
-      }
-      
-      updatedBox.x1 = Math.max(0, Math.min(updatedBox.x1, maxX));
-      updatedBox.y1 = Math.max(0, Math.min(updatedBox.y1, maxY));
-      updatedBox.x2 = Math.max(0, Math.min(updatedBox.x2, maxX));
-      updatedBox.y2 = Math.max(0, Math.min(updatedBox.y2, maxY));
-      
-      // setSelectedBox(updatedBox); // REMOVE THIS LINE
-      setBoxes(bs => bs.map(b => b.id === selectedId ? updatedBox : b));
-      
-      // 更新框列表
-      setBoundingBoxes(prev => ({
-        ...prev,
-        [currentFrameIndex]: (prev[currentFrameIndex] || []).map(box => 
-          box.id === selectedId ? updatedBox : box
-        )
-      }));
-    }
-  };
-
-  const handleMouseUp = (e) => {
-    // 结束绘制
-    if (isDrawing && currentBox && startPoint) {
-      const width = Math.abs(currentBox.x2 - currentBox.x1);
-      const height = Math.abs(currentBox.y2 - currentBox.y1);
-      
-      if (width > 5 && height > 5) {
-        const newBox = { ...currentBox, id: Date.now() };
-        setBoundingBoxes(prev => ({
-          ...prev,
-          [currentFrameIndex]: [...(prev[currentFrameIndex] || []), newBox]
-        }));
-        setSelectedId(newBox.id);
-      }
-      setIsDrawing(false);
-      setStartPoint(null);
-      setCurrentBox(null);
-    }
-    
-    // 结束调整大小
-    if (isResizing) {
-      setIsResizing(false);
-      setResizeStartPoint(null);
-      setOriginalBox(null);
-    }
-  };
-
-  const handleBoxClick = (box) => {
-    setSelectedId(box.id);
-  };
-
-  const handleDeleteBox = (boxId) => {
-    setBoundingBoxes(prev => ({
-      ...prev,
-      [currentFrameIndex]: prev[currentFrameIndex]?.filter(box => box.id !== boxId) || []
-    }));
-    setSelectedId(null);
-  };
-
-  const handleSaveAnnotation = (label, trackingId) => {
-    const selectedBox = boxes.find(b => b.id === selectedId);
-    if (selectedBox) {
-      const annotation = {
-        ...selectedBox,
-        label,
-        trackingId
-      };
-      setAnnotations(prev => ({
-        ...prev,
-        [currentFrameIndex]: [...(prev[currentFrameIndex] || []), annotation]
-      }));
-      setSelectedId(null);
-    }
-  };
 
   const handleExportAnnotations = () => {
     const csvData = [];
@@ -641,424 +658,519 @@ const ObjectDetectionTool = () => {
 
   // --- CANVAS REFACTOR END ---
 
-  // Helper for handle cursor
-  function getHandleCursor(name) {
-    switch (name) {
-      case 'nw': return 'nwse-resize';
-      case 'n': return 'ns-resize';
-      case 'ne': return 'nesw-resize';
-      case 'e': return 'ew-resize';
-      case 'se': return 'nwse-resize';
-      case 's': return 'ns-resize';
-      case 'sw': return 'nesw-resize';
-      case 'w': return 'ew-resize';
-      default: return 'pointer';
+
+
+  // 加入 handleLoadS3Video
+  const handleLoadS3Video = async () => {
+    if (!selectedOrgId || !selectedKeyId) return;
+    try {
+      // 1. 获取 S3 视频列表
+      const response = await s3VideoAPI.getFrontVideos(selectedOrgId, selectedKeyId);
+      const videos = response.data.videos || [];
+      setS3Videos(videos);
+      setCurrentS3VideoIndex(0);
+      // 2. 加载首个视频帧
+      if (videos.length > 0) {
+        await loadS3Video(videos[0]);
+      } else {
+        setFrameUrls([]);
+      }
+    } catch (err) {
+      alert('Failed to load S3 videos or frames');
+      setS3Videos([]);
+      setFrameUrls([]);
     }
-  }
+  };
+
+  // label 到 classnumber 的映射
+  const labelMap = {
+    car: 0,
+    truck: 1,
+    bus: 2,
+    person: 3,
+    bicycle: 4,
+    motorcycle: 5,
+    traffic_light: 6,
+    stop_sign: 7
+  };
+  const classToLabel = Object.entries(labelMap).reduce((acc, [k, v]) => { acc[v] = k; return acc; }, {});
+
+  // 导出为TXT
+  const handleExportFrameBoxesTxt = () => {
+    let lines = [];
+    let lastBoxes = [];
+    for (let i = 0; i < frameUrls.length; i++) {
+      let boxes = frameBoxes[i];
+      if (!boxes || boxes.length === 0) {
+        boxes = lastBoxes; // 用上一帧的
+      } else {
+        lastBoxes = boxes;
+      }
+      (boxes || []).forEach(box => {
+        const classnumber = labelMap[box.label] !== undefined ? labelMap[box.label] : -1;
+        lines.push(
+          `${i}\t${Math.round(box.x)} ${Math.round(box.x + box.w)} ${Math.round(box.y)} ${Math.round(box.y + box.h)} ${classnumber} ${box.trackingId || -1}`
+        );
+      });
+    }
+    const txtContent = lines.join('\n');
+    const blob = new Blob([txtContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'annotations.txt';
+    a.click();
+  };
+
+  // 导入TXT功能
+  const [importTxt, setImportTxt] = useState('');
+  const [showImport, setShowImport] = useState(false);
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        setImportTxt(evt.target.result);
+      };
+      reader.readAsText(file);
+    }
+  };
+  const handleImportFrameBoxesTxt = () => {
+    const lines = importTxt.split(/\r?\n/).filter(Boolean);
+    const newFrameBoxes = {};
+    lines.forEach(line => {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 7) {
+        const frame = parseInt(parts[0], 10);
+        const x1 = parseFloat(parts[1]);
+        const x2 = parseFloat(parts[2]);
+        const y1 = parseFloat(parts[3]);
+        const y2 = parseFloat(parts[4]);
+        const classnumber = parseInt(parts[5], 10);
+        const trackingId = parts[6];
+        const label = classToLabel[classnumber] || '';
+        const box = {
+          id: Date.now() + Math.random(),
+          x: x1,
+          y: y1,
+          w: x2 - x1,
+          h: y2 - y1,
+          label,
+          trackingId
+        };
+        if (!newFrameBoxes[frame]) newFrameBoxes[frame] = [];
+        newFrameBoxes[frame].push(box);
+      }
+    });
+    setFrameBoxes(prev => ({ ...prev, ...newFrameBoxes }));
+    // 自动切换到第一个有box的帧并显示
+    const frames = Object.keys(newFrameBoxes).map(Number).sort((a, b) => a - b);
+    if (frames.length > 0) {
+      setCurrentFrameIndex(frames[0]);
+      setBoxes(newFrameBoxes[frames[0]] || []);
+    }
+    setShowImport(false);
+    setImportTxt('');
+  };
 
   return (
-    <div className="object-detection-tool" style={{ 
-      display: 'flex', 
-      height: '100vh', 
-      background: 'linear-gradient(135deg, #0f3460 0%, #16213e 50%, #0f3460 100%)',
-      color: '#fff',
-      fontFamily: 'Arial, sans-serif'
-    }}>
-      {/* Left Panel */}
-      <aside className="left-panel" style={{ width: 250, padding: 20, background: 'rgba(20,28,44,0.98)', borderRight: '1px solid #00ff96' }}>
-        <div className="card" style={{ background: 'rgba(20,28,44,0.98)', borderRadius: 14, boxShadow: '0 2px 16px rgba(100,255,220,0.06)', border: '1px solid #00ff96', padding: 18, color: '#b0b0b0', fontSize: 13 }}>
-          <div className="section-title" style={{ fontWeight: 700, fontSize: 15, letterSpacing: 2, color: '#00ff96', marginBottom: 12, borderBottom: '1.5px solid #00ff96', paddingBottom: 6 }}>
-            OBJECT DETECTION TOOL
-          </div>
-          
-          {/* Data Source Selection */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ marginBottom: 8, fontSize: 12, color: '#b0b0b0' }}>Data Source:</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className={`test-button ${dataSource === 'local' ? 'active' : ''}`}
+    <div className="App">
+      <header className="App-header">
+        <div className="company-name">OBJECT DETECTION TOOL</div>
+        <div className="tagline">Keeping drivers safe through AI innovation</div>
+      </header>
+      <div className="App-content">
+        {/* Left Panel: Data Source Selection */}
+        <div className="data-source-selection">
+          <div className="selection-container">
+            <h2>Select Data Source</h2>
+            <div className="selection-options">
+              <div
+                className={`option-card${dataSource === 'local' ? ' active' : ''}`}
                 onClick={() => setDataSource('local')}
-                style={{ flex: 1, padding: '8px 12px', fontSize: 12 }}
               >
-                Local File
-              </button>
-              <button
-                className={`test-button ${dataSource === 's3' ? 'active' : ''}`}
-                onClick={() => setDataSource('s3')}
-                style={{ flex: 1, padding: '8px 12px', fontSize: 12 }}
-              >
-                S3 Storage
-              </button>
-            </div>
-          </div>
-
-          {/* Local File Upload */}
-          {dataSource === 'local' && (
-            <div className="form-group" style={{ marginBottom: 15 }}>
-              <div style={{ color: '#b0b0b0', fontSize: 12, marginBottom: 4 }}>
-                Select Video File
+                <div className="option-icon">📁</div>
+                <h3>Local Upload</h3>
+                <p>Upload DMP folder from your local machine</p>
               </div>
-              <input
-                type="file"
-                accept="video/*"
-                onChange={handleLocalFileChange}
-                style={{
-                  width: '100%',
-                  padding: '8px',
-                  background: '#1a1a1a',
-                  border: '1px solid #333',
-                  borderRadius: 6,
-                  color: '#fff',
-                  fontSize: 12
-                }}
-              />
+              <div
+                className={`option-card${dataSource === 's3' ? ' active' : ''}`}
+                onClick={() => setDataSource('s3')}
+              >
+                <div className="option-icon">☁️</div>
+                <h3>Direct S3 Link</h3>
+                <p>Connect directly to S3 bucket</p>
+              </div>
             </div>
-          )}
-
-          {/* S3 Configuration */}
-          {dataSource === 's3' && (
-            <>
-              <div className="form-group" style={{ marginBottom: 15 }}>
-                <div style={{ color: '#b0b0b0', fontSize: 12, marginBottom: 4 }}>
-                  Organization ID
-                </div>
+            {/* Local file input */}
+            {dataSource === 'local' && (
+              <div style={{ marginTop: 18 }}>
+                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Select Video File</label>
+                <input type="file" accept="video/*" onChange={handleLocalFileChange} className="select-input" style={{ marginTop: 4 }} />
+              </div>
+            )}
+            {/* S3 selection UI */}
+            {dataSource === 's3' && (
+              <div style={{ marginTop: 18 }}>
+                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Organization ID:</label>
                 <select
-                  value={selectedOrgId || ''}
-                  onChange={(e) => handleOrgIdChange(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px',
-                    background: '#1a1a1a',
-                    border: '1px solid #333',
-                    borderRadius: 6,
-                    color: '#fff',
-                    fontSize: 12
-                  }}
+                  value={selectedOrgId}
+                  onChange={e => handleOrgIdChange(e.target.value)}
+                  className="select-input"
                 >
-                  <option value="">Select Organization</option>
+                  <option value="">Select Organization ID</option>
                   {orgIds.map(orgId => (
                     <option key={orgId} value={orgId}>{orgId}</option>
                   ))}
                 </select>
-              </div>
-              {selectedOrgId && (
-                <div className="form-group" style={{ marginBottom: 15 }}>
-                  <div style={{ color: '#b0b0b0', fontSize: 12, marginBottom: 4 }}>
-                    Key ID
-                  </div>
-                  <select
-                    value={selectedKeyId || ''}
-                    onChange={(e) => handleKeyIdChange(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '8px',
-                      background: '#1a1a1a',
-                      border: '1px solid #333',
-                      borderRadius: 6,
-                      color: '#fff',
-                      fontSize: 12
-                    }}
-                  >
-                    <option value="">Select Key</option>
-                    {keyIds.map(keyId => (
-                      <option key={keyId} value={keyId}>{keyId}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {s3Videos.length > 0 && (
-                <div className="form-group" style={{ marginTop: 10 }}>
-                  <div style={{ color: '#b0b0b0', fontSize: 12, marginBottom: 4 }}>
-                    Files <span style={{ color: '#00ff96' }}>({s3Videos.length})</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <button className="test-button" onClick={handlePrevVideo} disabled={currentS3VideoIndex === 0}>⏮️</button>
-                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 12 }}>
-                      {currentS3VideoIndex + 1} / {s3Videos.length}
-                    </span>
-                    <button className="test-button" onClick={handleNextVideo} disabled={currentS3VideoIndex === s3Videos.length - 1}>⏭️</button>
-                  </div>
-                  <div style={{ marginTop: 6, color: '#00ff96', fontWeight: 600, wordBreak: 'break-all', fontSize: 12 }}>
-                    {s3Videos[currentS3VideoIndex]?.filename}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </aside>
-      
-      {/* Main Content */}
-      <main className="main-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="card video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
-          <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {(dataSource === 'local' && localVideoUrl) ? (
-              <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
-            ) : (dataSource === 's3' && frameUrls.length > 0) ? (
-              <div style={{ position: 'relative', width: '100%', height: 'calc(100vh - 200px)', minHeight: '400px' }}>
-                <div
-                  ref={canvasRef}
-                  style={{
-                    position: 'relative',
-                    width: '100%',
-                    height: 'calc(100vh - 200px)',
-                    minHeight: 400,
-                    background: frameUrls[currentFrameIndex]
-                      ? `url(${frameUrls[currentFrameIndex]}) center center / contain no-repeat #000`
-                      : '#000',
-                    borderRadius: 12,
-                    userSelect: 'none',
-                    overflow: 'hidden',
-                    cursor: mode === 'drawing' ? 'crosshair' : 'default',
-                    display: 'block',
-                  }}
-                  onMouseDown={handleImgMouseDown}
-                  onMouseMove={handleImgMouseMove}
-                  onMouseUp={handleImgMouseUp}
-                  onDoubleClick={handleImgDoubleClick}
-                  onDragStart={e => e.preventDefault()}
-                  onClick={handleCanvasClick}
+                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, marginTop: 10, display: 'block', textAlign: 'left' }}>Key ID:</label>
+                <select
+                  value={selectedKeyId}
+                  onChange={e => setSelectedKeyId(e.target.value)}
+                  className="select-input"
+                  disabled={!selectedOrgId}
                 >
-                  {/* Render bounding boxes and handles here, using the same scaling logic as before */}
-                  {boxes.map(box => {
-                    const info = getImgInfo();
-                    if (!info) return null;
-                    const scaleX = info.scaleX, scaleY = info.scaleY;
-                    return (
-                      <div
-                        key={box.id}
-                        style={{
-                          position: 'absolute',
-                          left: box.x * scaleX,
-                          top: box.y * scaleY,
-                          width: box.w * scaleX,
-                          height: box.h * scaleY,
-                          border: box.id === selectedId ? '2px solid #00ff96' : '2px solid #ff6b6b',
-                          background: box.id === selectedId ? 'rgba(0,255,150,0.15)' : 'rgba(255,107,107,0.10)',
-                          zIndex: 10,
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    );
-                  })}
-                  
-                  {/* Current drawing box */}
-                  {drawStart && (() => {
-                    const info = getImgInfo();
-                    if (!info) return null;
-                    const scaleX = info.scaleX, scaleY = info.scaleY;
-                    return (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: `${drawStart.x * scaleX}px`,
-                          top: `${drawStart.y * scaleY}px`,
-                          width: `${Math.abs(drawStart.x - (drawStart.x + drawStart.w)) * scaleX}px`,
-                          height: `${Math.abs(drawStart.y - (drawStart.y + drawStart.h)) * scaleY}px`,
-                          border: '2px dashed #00ff96',
-                          background: 'rgba(0,255,150,0.08)',
-                          zIndex: 11,
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    );
-                  })()}
-                  
-                  {/* Floating pagination controls */}
-                  <div 
-                    style={{ 
-                      position: 'absolute', 
-                      bottom: '10px', 
-                      left: '50%', 
-                      transform: 'translateX(-50%)',
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      gap: 15, 
-                      padding: '8px 16px', 
-                      background: 'rgba(0,0,0,0.9)', 
-                      borderRadius: 20,
-                      backdropFilter: 'blur(10px)',
-                      border: '1px solid rgba(0,255,150,0.4)',
-                      zIndex: 1000
-                    }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onMouseMove={(e) => e.stopPropagation()}
-                    onMouseUp={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      className="test-button"
-                      onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
-                      disabled={currentFrameIndex === 0}
-                      style={{ padding: '6px 10px', fontSize: '14px' }}
-                    >⏮️</button>
-                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 14, minWidth: '80px', textAlign: 'center' }}>
-                      {currentFrameIndex + 1} / {frameUrls.length}
-                    </span>
-                    <button
-                      className="test-button"
-                      onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
-                      disabled={currentFrameIndex === frameUrls.length - 1}
-                      style={{ padding: '6px 10px', fontSize: '14px' }}
-                    >⏭️</button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ color: '#888', textAlign: 'center', fontSize: 16 }}>
-                Please select a video
-                {dataSource === 's3' && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>
-                    Debug: frameUrls.length = {frameUrls.length}
-                  </div>
-                )}
+                  <option value="">Select Key ID</option>
+                  {keyIds.map(keyId => (
+                    <option key={keyId} value={keyId}>{keyId}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleLoadS3Video}
+                  className="test-button"
+                  style={{ marginTop: 10 }}
+                  disabled={!selectedOrgId || !selectedKeyId}
+                >
+                  Load S3 Video
+                </button>
               </div>
             )}
           </div>
         </div>
-      </main>
-      
-      {/* Right Panel */}
-      <aside className="right-panel">
-        <div className="card selected-points-container" style={{ width: 200, minWidth: 180, background: 'rgba(20,28,44,0.98)', borderRadius: 14, boxShadow: '0 2px 16px rgba(100,255,220,0.06)', border: '1px solid #00ff96', padding: 18, color: '#b0b0b0', fontSize: 13 }}>
-          <div style={{ width: '100%' }}>
-            <div className="section-title" style={{ fontWeight: 700, fontSize: 15, letterSpacing: 2, color: '#00ff96', marginBottom: 12, borderBottom: '1.5px solid #00ff96', paddingBottom: 6 }}>
-              ANNOTATION PANEL
-            </div>
-            
-            {dataSource === 's3' && frameUrls.length > 0 ? (
-              <div>
-                {/* Annotation instructions */}
-                <div style={{ marginBottom: 15, fontSize: 11, color: '#888' }}>
-                  Drag to draw boxes. Click and drag inside existing boxes to resize them. Double-click to select boxes.
-                </div>
-                
-                {/* Debug information */}
-                <div style={{ marginBottom: 10, fontSize: 10, color: '#666', padding: '5px', background: 'rgba(0,0,0,0.3)', borderRadius: '4px' }}>
-                  <div>Selected Box: {selectedId ? 'Yes' : 'No'}</div>
-                  <div>Drawing: {drawStart ? 'Yes' : 'No'}</div>
-                  <div>Resizing: {resizeStart ? 'Yes' : 'No'}</div>
-                  {selectedId && (
-                    <div>Box Coords: ({Math.round(boxes.find(b => b.id === selectedId)?.x)},{Math.round(boxes.find(b => b.id === selectedId)?.y)}) - ({Math.round(boxes.find(b => b.id === selectedId)?.x + boxes.find(b => b.id === selectedId)?.w)},{Math.round(boxes.find(b => b.id === selectedId)?.y + boxes.find(b => b.id === selectedId)?.h)})</div>
-                  )}
-                </div>
-                
-                {/* Current selected box information */}
-                {selectedId && (() => {
-                  const info = getImgInfo();
-                  if (!info) return null;
-                  const box = boxes.find(b => b.id === selectedId);
-                  if (!box) return null;
-                  const scaleX = info.scaleX, scaleY = info.scaleY;
-                  return (
-                    <div style={{ marginBottom: 15, padding: 10, background: 'rgba(0,255,150,0.1)', borderRadius: 8, border: '1px solid rgba(0,255,150,0.3)' }}>
-                      <div style={{ fontSize: 12, color: '#00ff96', marginBottom: 8 }}>Selected Box Info:</div>
-                      <div style={{ fontSize: 10, marginBottom: 4 }}>X: {Math.round(box.x)}</div>
-                      <div style={{ fontSize: 10, marginBottom: 4 }}>Y: {Math.round(box.y)}</div>
-                      <div style={{ fontSize: 10, marginBottom: 4 }}>W: {Math.round(box.w)}</div>
-                      <div style={{ fontSize: 10, marginBottom: 8 }}>H: {Math.round(box.h)}</div>
-                      <div style={{ marginBottom: 8 }}>
-                        <label style={{ fontSize: 11, color: '#b0b0b0' }}>Label:</label>
-                        <select
-                          value={box.label || ''}
-                          onChange={e => {
-                            const label = e.target.value;
-                            setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, label } : b));
-                          }}
-                          style={{
-                            width: '100%',
-                            marginTop: 4,
-                            padding: '4px 8px',
-                            background: '#1a1a1a',
-                            border: '1px solid #333',
-                            borderRadius: 4,
-                            color: '#fff',
-                            fontSize: 11
-                          }}
-                        >
-                          <option value="">Select label</option>
-                          <option value="car">Car</option>
-                          <option value="truck">Truck</option>
-                          <option value="bus">Bus</option>
-                          <option value="person">Person</option>
-                          <option value="bicycle">Bicycle</option>
-                          <option value="motorcycle">Motorcycle</option>
-                          <option value="traffic_light">Traffic Light</option>
-                          <option value="stop_sign">Stop Sign</option>
-                        </select>
-                      </div>
-                      <div style={{ marginBottom: 8 }}>
-                        <label style={{ fontSize: 11, color: '#b0b0b0' }}>Tracking ID:</label>
-                        <input
-                          type="number"
-                          value={box.trackingId || ''}
-                          onChange={e => {
-                            const trackingId = e.target.value;
-                            setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, trackingId } : b));
-                          }}
-                          style={{
-                            width: '100%',
-                            marginTop: 4,
-                            padding: '4px 8px',
-                            background: '#1a1a1a',
-                            border: '1px solid #333',
-                            borderRadius: 4,
-                            color: '#fff',
-                            fontSize: 11
-                          }}
-                        />
-                      </div>
-                      <button
-                        onClick={handleDeleteSelectedBox}
+        {/* Main Content: Annotation Canvas/Video/Tool */}
+        <div className="main-content">
+          {/* ...你的标注/视频/画布功能... */}
+          {/* 保持原有功能逻辑，只是结构和 className 变化 */}
+          {/* 视频预览容器 */}
+          <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
+            <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {(dataSource === 'local' && localVideoUrl) ? (
+                <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
+              ) : (dataSource === 's3' && frameUrls.length > 0) ? (
+                <div style={{ position: 'relative', width: '100%', height: 'calc(100vh - 200px)', minHeight: '400px' }}>
+                  <div
+                    ref={canvasRef}
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      height: '100%',
+                      borderRadius: 12,
+                      userSelect: 'none',
+                      overflow: 'hidden',
+                      cursor: mode === 'drawing' ? 'crosshair' : 'default',
+                      display: 'block',
+                    }}
+                    onMouseDown={handleImgMouseDown}
+                    onMouseMove={handleImgMouseMove}
+                    onMouseUp={handleImgMouseUp}
+                    onDoubleClick={handleImgDoubleClick}
+                    onDragStart={e => e.preventDefault()}
+                    onClick={handleCanvasClick}
+                    onWheel={handleWheel} // 添加滚轮缩放事件
+                  >
+                    {/* 图片层 */}
+                    {frameUrls[currentFrameIndex] && (
+                      <img
+                        ref={imgRef}
+                        src={frameUrls[currentFrameIndex]}
+                        alt="frame"
                         style={{
                           width: '100%',
-                          padding: '8px 12px',
-                          background: '#ff6b6b',
-                          color: '#fff',
-                          border: 'none',
-                          borderRadius: 6,
-                          fontSize: 12,
-                          cursor: 'pointer',
-                          marginTop: 8
+                          height: '100%',
+                          objectFit: 'contain',
+                          display: 'block',
+                          pointerEvents: 'none',
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          transform: `scale(${zoom})`,
+                          transformOrigin: 'center center',
                         }}
-                      >
-                        Delete Selected Box
-                      </button>
+                      />
+                    )}
+                    {/* bounding box 层 */}
+                    {(() => {
+                      const info = getImgInfo();
+                      if (!info) return null;
+                      return boxes.map(box => {
+                        const scaleX = info.scaleX, scaleY = info.scaleY;
+                        return (
+                          <div
+                            key={box.id}
+                            style={{
+                              position: 'absolute',
+                              left: box.x * info.scaleX + info.offsetX,
+                              top: box.y * info.scaleY + info.offsetY,
+                              width: box.w * info.scaleX,
+                              height: box.h * info.scaleY,
+                              border: box.id === selectedId ? '2px solid #00ff96' : '2px solid #ff6b6b',
+                              background: box.id === selectedId ? 'rgba(0,255,150,0.15)' : 'rgba(255,107,107,0.10)',
+                              zIndex: 10,
+                              pointerEvents: 'none',
+                            }}
+                          />
+                        );
+                      });
+                    })()}
+                    {/* Current drawing box */}
+                    {drawStart && (() => {
+                      const info = getImgInfo();
+                      if (!info) return null;
+                      const scaleX = info.scaleX, scaleY = info.scaleY;
+                      return (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: `${drawStart.x * scaleX + info.offsetX}px`,
+                            top: `${drawStart.y * scaleY + info.offsetY}px`,
+                            width: `${Math.abs(drawStart.x - (drawStart.x + drawStart.w)) * scaleX}px`,
+                            height: `${Math.abs(drawStart.y - (drawStart.y + drawStart.h)) * scaleY}px`,
+                            border: '2px dashed #00ff96',
+                            background: 'rgba(0,255,150,0.08)',
+                            zIndex: 11,
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      );
+                    })()}
+                    
+                    {/* Floating pagination controls */}
+                    <div 
+                      style={{ 
+                        position: 'absolute', 
+                        bottom: '10px', 
+                        left: '50%', 
+                        transform: 'translateX(-50%)',
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: 15, 
+                        padding: '8px 16px', 
+                        background: 'rgba(0,0,0,0.9)', 
+                        borderRadius: 20,
+                        backdropFilter: 'blur(10px)',
+                        border: '1px solid rgba(0,255,150,0.4)',
+                        zIndex: 1000
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onMouseMove={(e) => e.stopPropagation()}
+                      onMouseUp={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        className="test-button"
+                        onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
+                        disabled={currentFrameIndex === 0}
+                        style={{ padding: '6px 10px', fontSize: '14px' }}
+                      >⏮️</button>
+                      <span style={{ fontWeight: 600, color: '#fff', fontSize: 14, minWidth: '80px', textAlign: 'center' }}>
+                        {currentFrameIndex + 1} / {frameUrls.length}
+                      </span>
+                      <button
+                        className="test-button"
+                        onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
+                        disabled={currentFrameIndex === frameUrls.length - 1}
+                        style={{ padding: '6px 10px', fontSize: '14px' }}
+                      >⏭️</button>
                     </div>
-                  );
-                })()}
-                
-                {/* Statistics */}
-                <div style={{ marginBottom: 15, fontSize: 11 }}>
-                  <div>Current Frame Boxes: {(boundingBoxes[currentFrameIndex] || []).length}</div>
-                  <div>Total Annotated Frames: {Object.keys(annotations).length}</div>
+                  </div>
                 </div>
-                
-                {/* Export button */}
+              ) : (
+                <div style={{ color: '#888', textAlign: 'center', fontSize: 16 }}>
+                  Please select a video
+                  {dataSource === 's3' && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>
+                      Debug: frameUrls.length = {frameUrls.length}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        {/* Right Panel: Annotation Panel */}
+        <div className="selected-points-container">
+          {/* ...右侧 annotation panel 内容，全部用 AnnotationTool.js 的 className ... */}
+          {/* Annotation instructions */}
+          <div style={{ marginBottom: 15, fontSize: 11, color: '#888' }}>
+            Drag to draw boxes. Click and drag inside existing boxes to resize them. Double-click to select boxes.
+          </div>
+          
+          {/* Current selected box information */}
+          {selectedId && (() => {
+            const info = getImgInfo();
+            if (!info) return null;
+            const box = boxes.find(b => b.id === selectedId);
+            if (!box) return null;
+            const scaleX = info.scaleX, scaleY = info.scaleY;
+            return (
+              <div style={{ marginBottom: 15, padding: 10, background: 'rgba(0,255,150,0.1)', borderRadius: 8, border: '1px solid rgba(0,255,150,0.3)' }}>
+                <div style={{ fontSize: 12, color: '#00ff96', marginBottom: 8 }}>Selected Box Info:</div>
+                <div style={{ fontSize: 10, marginBottom: 4 }}>X: {Math.round(box.x)}</div>
+                <div style={{ fontSize: 10, marginBottom: 4 }}>Y: {Math.round(box.y)}</div>
+                <div style={{ fontSize: 10, marginBottom: 4 }}>W: {Math.round(box.w)}</div>
+                <div style={{ fontSize: 10, marginBottom: 8 }}>H: {Math.round(box.h)}</div>
+                <div style={{ marginBottom: 8 }}>
+                  <label style={{ fontSize: 11, color: '#b0b0b0' }}>Label:</label>
+                  <select
+                    value={box.label || ''}
+                    onChange={e => {
+                      const label = e.target.value;
+                      setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, label } : b));
+                      // 保存标签更改到历史记录
+                      setTimeout(() => saveToHistory('label', `更改框 ${selectedId} 标签为 ${label}`), 0);
+                    }}
+                    style={{
+                      width: '100%',
+                      marginTop: 4,
+                      padding: '4px 8px',
+                      background: '#1a1a1a',
+                      border: '1px solid #333',
+                      borderRadius: 4,
+                      color: '#fff',
+                      fontSize: 11
+                    }}
+                  >
+                    <option value="">Select label</option>
+                    <option value="car">Car</option>
+                    <option value="truck">Truck</option>
+                    <option value="bus">Bus</option>
+                    <option value="person">Person</option>
+                    <option value="bicycle">Bicycle</option>
+                    <option value="motorcycle">Motorcycle</option>
+                    <option value="traffic_light">Traffic Light</option>
+                    <option value="stop_sign">Stop Sign</option>
+                  </select>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <label style={{ fontSize: 11, color: '#b0b0b0' }}>Tracking ID:</label>
+                  <input
+                    type="number"
+                    value={box.trackingId || ''}
+                    onChange={e => {
+                      const trackingId = e.target.value;
+                      setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, trackingId } : b));
+                      // 保存跟踪ID更改到历史记录
+                      setTimeout(() => saveToHistory('tracking', `更改框 ${selectedId} 跟踪ID为 ${trackingId}`), 0);
+                    }}
+                    style={{
+                      width: '100%',
+                      marginTop: 4,
+                      padding: '4px 8px',
+                      background: '#1a1a1a',
+                      border: '1px solid #333',
+                      borderRadius: 4,
+                      color: '#fff',
+                      fontSize: 11
+                    }}
+                  />
+                </div>
                 <button
-                  onClick={handleExportAnnotations}
-                  disabled={Object.keys(annotations).length === 0}
+                  onClick={handleDeleteSelectedBox}
                   style={{
                     width: '100%',
                     padding: '8px 12px',
-                    background: Object.keys(annotations).length > 0 ? '#00ff96' : '#333',
-                    color: Object.keys(annotations).length > 0 ? '#000' : '#666',
+                    background: '#ff6b6b',
+                    color: '#fff',
                     border: 'none',
                     borderRadius: 6,
                     fontSize: 12,
-                    cursor: Object.keys(annotations).length > 0 ? 'pointer' : 'not-allowed'
+                    cursor: 'pointer',
+                    marginTop: 8
                   }}
                 >
-                  Export Annotations (CSV)
+                  Delete Selected Box
                 </button>
               </div>
-            ) : (
-              <div style={{ color: '#888', textAlign: 'center', fontSize: 12 }}>
-                Please select a video to start annotation
-              </div>
-            )}
+            );
+          })()}
+          
+          {/* Statistics */}
+          <div style={{ marginBottom: 15, fontSize: 11 }}>
+            <div>Current Frame Boxes: {(boundingBoxes[currentFrameIndex] || []).length}</div>
+            <div>Total Annotated Frames: {Object.keys(annotations).length}</div>
           </div>
+          
+          {/* Export button */}
+          <button
+            onClick={handleExportAnnotations}
+            disabled={Object.keys(annotations).length === 0}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              background: Object.keys(annotations).length > 0 ? '#00ff96' : '#333',
+              color: Object.keys(annotations).length > 0 ? '#000' : '#666',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 12,
+              cursor: Object.keys(annotations).length > 0 ? 'pointer' : 'not-allowed'
+            }}
+          >
+            Export Annotations (CSV)
+          </button>
+          <button
+            onClick={handleExportFrameBoxesTxt}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              background: '#00bfff',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 12,
+              cursor: 'pointer',
+              marginTop: 8
+            }}
+            disabled={Object.keys(frameBoxes).length === 0}
+          >
+            Export as TXT
+          </button>
+          <button
+            onClick={() => setShowImport(true)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              background: '#00bfff',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 12,
+              cursor: 'pointer',
+              marginTop: 8
+            }}
+          >
+            Import TXT
+          </button>
+          {showImport && ReactDOM.createPortal(
+            <div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ background: '#222', padding: 24, borderRadius: 10, minWidth: 300, maxWidth: '95vw', width: 480, boxSizing: 'border-box', boxShadow: '0 4px 32px #0008' }}>
+                <div style={{ color: '#fff', marginBottom: 8, fontWeight: 600 }}>Choose a TXT file to import, or paste content below:</div>
+                <input type="file" accept=".txt" onChange={handleImportFile} style={{ display: 'block', width: '100%', marginBottom: 12, background: '#fff', color: '#000', borderRadius: 4, padding: 6, border: '1px solid #888' }} />
+                <textarea
+                  value={importTxt}
+                  onChange={e => setImportTxt(e.target.value)}
+                  rows={10}
+                  style={{ width: '100%', marginBottom: 12, background: '#111', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 8, fontSize: 14, resize: 'vertical' }}
+                  placeholder={'0\t374 649 389 664 0 1\n1\t374 649 389 664 0 1 ...'}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={handleImportFrameBoxesTxt} style={{ flex: 1, background: '#00ff96', color: '#000', border: 'none', borderRadius: 6, padding: 10, fontWeight: 600, fontSize: 15, cursor: 'pointer' }}>Import</button>
+                  <button onClick={() => { setShowImport(false); setImportTxt(''); }} style={{ flex: 1, background: '#444', color: '#fff', border: 'none', borderRadius: 6, padding: 10, fontSize: 15, cursor: 'pointer' }}>Cancel</button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
         </div>
-      </aside>
+      </div>
     </div>
   );
 };
