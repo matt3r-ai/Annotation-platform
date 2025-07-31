@@ -75,6 +75,21 @@ const HomePage = () => {
                 </button>
               </div>
 
+              {/* Scenario Analysis */}
+              <div className="tool-card">
+                <div className="tool-icon">🔍</div>
+                <h3 className="tool-title">Scenario Analysis</h3>
+                <p className="tool-description">
+                  Find and analyze interesting driving scenarios with automated detection and review tools.
+                </p>
+                <button 
+                  className="tool-button"
+                  onClick={() => handleToolClick('/scenario-analysis')}
+                >
+                  Launch Tool
+                </button>
+              </div>
+
               {/* Lane Follow Detection */}
               <div className="tool-card">
                 <div className="tool-icon">🛣️</div>
