@@ -226,7 +226,7 @@ async def fetch_scenarios(query: ScenarioQuery):
         if not event_conditions:
             # 如果没有选择事件类型，只检查dmp_status = 'SUCCESS'
             sql_query = f"""
-            SELECT id, created_at, data_links, dmp_status, start_time, end_time
+            SELECT id, org_id, key_id, vin, created_at, data_links, dmp_status, start_time, end_time, data_source_status, updated_at, osm_tags
             FROM public.dmp
             WHERE dmp_status = 'SUCCESS'
               AND jsonb_path_exists(data_links, '$.trip.console_trip ? (@ != null && @ != "null")')
@@ -238,7 +238,7 @@ async def fetch_scenarios(query: ScenarioQuery):
             # 如果选择了事件类型，使用AND条件确保场景同时包含所有选中的event types
             event_condition = " AND ".join(event_conditions)
             sql_query = f"""
-            SELECT id, created_at, data_links, dmp_status, start_time, end_time
+            SELECT id, org_id, key_id, vin, created_at, data_links, dmp_status, start_time, end_time, data_source_status, updated_at, osm_tags
             FROM public.dmp
             WHERE dmp_status = 'SUCCESS'
               AND jsonb_path_exists(data_links, '$.trip.console_trip ? (@ != null && @ != "null")')
@@ -254,7 +254,7 @@ async def fetch_scenarios(query: ScenarioQuery):
         
         scenarios = []
         for row in rows:
-            scenario_id, created_at, data_links, dmp_status, start_time, end_time = row
+            scenario_id, org_id, key_id, vin, created_at, data_links, dmp_status, start_time, end_time, data_source_status, updated_at, osm_tags = row
             
             # Determine event type from data_links
             event_type = "unknown"
@@ -315,6 +315,9 @@ async def fetch_scenarios(query: ScenarioQuery):
             
             scenario_data = {
                 "id": scenario_id,
+                "org_id": org_id,
+                "key_id": key_id,
+                "vin": vin,
                 "event_type": event_type,
                 "timestamp": created_at.isoformat() if created_at else "unknown",
                 "status": "pending",
@@ -323,7 +326,11 @@ async def fetch_scenarios(query: ScenarioQuery):
                 "video_path": video_path,
                 "console_trip": data_links.get("trip", {}).get("console_trip") if data_links else None,
                 "start_time": start_time,
-                "end_time": end_time
+                "end_time": end_time,
+                "data_source_status": data_source_status,
+                "created_at": created_at.isoformat() if created_at else "",
+                "updated_at": updated_at.isoformat() if updated_at else "",
+                "osm_tags": osm_tags
             }
             
             # 如果有video_path，生成S3 URL
