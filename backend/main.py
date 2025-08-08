@@ -93,7 +93,7 @@ class VideoClipRequest(BaseModel):
     key_id: str
     start_ts: float
     end_ts: float
-    preview_mode: bool = False  # 新增预览模式参数
+    preview_mode: bool = False  # New preview mode parameter
 
 # Helper to parse video start time from filename (assume format: ..._%Y-%m-%d_%H-%M-%S-front.mp4)
 from datetime import datetime
@@ -173,8 +173,8 @@ def download_and_clip_videos_by_ranges(
         local_filename = os.path.join(save_dir, output_name)
         
         if preview_mode:
-            print(f"Preview mode - returning URL without ffmpeg")  # 调试信息
-            # 预览模式：返回视频URL和元数据，不保存文件
+            print(f"Preview mode - returning URL without ffmpeg")  # Debug info
+            # Preview mode: return video URL and metadata without saving file
             results.append({
                 "preview_url": presigned_url,
                 "start_offset": offset_sec,
@@ -182,12 +182,12 @@ def download_and_clip_videos_by_ranges(
                 "success": True,
                 "preview_mode": True
             })
-            continue  # 跳过后续的ffmpeg处理
+            continue  # Skip subsequent ffmpeg processing
         
-        # 保存模式：实际剪辑并保存文件
+        # Save mode: actually clip and save file
         cmd = [
             "ffmpeg",
-            "-y",  # 自动覆盖输出文件
+            "-y",  # Auto overwrite output file
             "-ss", str(offset_sec),
             "-i", presigned_url,
             "-t", str(duration),
@@ -203,13 +203,13 @@ def download_and_clip_videos_by_ranges(
 
 @app.post("/api/video/clip")
 def clip_video(req: VideoClipRequest):
-    print(f"Received request - preview_mode: {req.preview_mode}")  # 调试信息
+    print(f"Received request - preview_mode: {req.preview_mode}")  # Debug info
     # Only one range, as per frontend usage
     timestamp_ranges = [(None, req.start_ts, req.end_ts)]
-    save_dir = "C:/Users/75672/Downloads/annotation-platform/saved_video"  # 保存到指定目录
+    save_dir = "C:/Users/75672/Downloads/annotation-platform/saved_video"  # Save to specified directory
     results = download_and_clip_videos_by_ranges(
         timestamp_ranges,
-        s3_bucket="matt3r-driving-footage-us-west-2",  # 使用视频数据的bucket
+        s3_bucket="matt3r-driving-footage-us-west-2",  # Use video data bucket
         org_id=req.org_id,
         key_id=req.key_id,
         save_dir=save_dir,
@@ -232,25 +232,25 @@ def clip_video(req: VideoClipRequest):
 
 @app.post("/api/local/load")
 async def load_local_parquet(file: UploadFile = File(...)):
-    """处理本地parquet文件上传"""
+    """Handle local parquet file upload"""
     try:
-        # 检查文件类型
+        # Check file type
         if not file.filename or not file.filename.endswith('.parquet'):
             return {"error": "Only parquet files are supported"}
         
-        # 保存上传的文件到临时目录
+        # Save uploaded file to temporary directory
         with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp_file:
             content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
         
-        # 读取parquet文件
+        # Read parquet file
         df = pd.read_parquet(tmp_file_path)
         
-        # 清理临时文件
+        # Clean up temporary file
         os.unlink(tmp_file_path)
         
-        # 提取GPS点数据
+        # Extract GPS point data
         points = []
         for _, row in df.iterrows():
             if 'lat' in row and 'lon' in row and 'timestamp' in row:
@@ -277,34 +277,34 @@ class LocalVideoClipRequest(BaseModel):
 
 @app.post("/api/local/clip")
 def clip_local_video(req: LocalVideoClipRequest):
-    """处理本地文件的视频剪辑"""
+    """Handle local file video clipping"""
     print(f"Local clip request - preview_mode: {req.preview_mode}")
     
-    # 从文件路径中提取信息
+    # Extract information from file path
     file_path = req.file_path
     file_name = os.path.basename(file_path)
     
-    # 从路径中提取org_id和key_id
-    # 路径格式: hamid_beta/U32K294123008/8598/processed_console_trip.parquet
+    # Extract org_id and key_id from path
+    # Path format: hamid_beta/U32K294123008/8598/processed_console_trip.parquet
     path_parts = file_path.split('/')
     org_id = path_parts[0] if len(path_parts) > 0 else "local_unknown"
     key_id = path_parts[1] if len(path_parts) > 1 else "local_unknown"
     
     print(f"Extracted org_id: {org_id}, key_id: {key_id} from path: {file_path}")
     
-    # 为本地文件创建临时保存目录
+    # Create temporary save directory for local files
     save_dir = "C:/Users/75672/Downloads/annotation-platform/saved_video/local"
     os.makedirs(save_dir, exist_ok=True)
     
-    # 使用现有的剪辑函数，传入从路径提取的org_id和key_id
+    # Use existing clip function, passing org_id and key_id extracted from path
     timestamp_ranges = [(None, req.start_ts, req.end_ts)]
     
-    # 调用现有的视频剪辑函数，就像S3版本一样
+    # Call existing video clip function, just like S3 version
     results = download_and_clip_videos_by_ranges(
         timestamp_ranges,
-        s3_bucket="matt3r-driving-footage-us-west-2",  # 使用视频数据的bucket
-        org_id=org_id,  # 使用从路径提取的org_id
-        key_id=key_id,  # 使用从路径提取的key_id
+        s3_bucket="matt3r-driving-footage-us-west-2",  # Use video data bucket
+        org_id=org_id,  # Use org_id extracted from path
+        key_id=key_id,  # Use key_id extracted from path
         save_dir=save_dir,
         preview_mode=req.preview_mode
     )
@@ -338,9 +338,9 @@ def clip_local_video(req: LocalVideoClipRequest):
 
 @app.get("/api/local/file-info")
 def get_local_file_info():
-    """获取当前本地文件信息"""
+    """Get current local file information"""
     return {
-        "file_path": "local_upload",  # 这里需要从前端传递实际的文件路径
+        "file_path": "local_upload",  # Need to pass actual file path from frontend
         "file_name": "processed_console_trip.parquet",
         "org_id": "local_upload",
         "key_id": "local_files"
@@ -349,29 +349,29 @@ def get_local_file_info():
 # Video-related API endpoints
 @app.get("/api/video/orgs")
 def get_video_org_ids():
-    """获取视频数据的org_ids"""
+    """Get org_ids for video data"""
     return {"org_ids": s3_video_manager.list_org_ids()}
 
 @app.get("/api/video/orgs/{org_id}/keys")
 def get_video_key_ids(org_id: str):
-    """获取指定org_id下的key_ids"""
+    """Get key_ids under specified org_id"""
     return {"key_ids": s3_video_manager.list_key_ids_by_org(org_id)}
 
 @app.get("/api/video/orgs/{org_id}/keys/{key_id}/videos")
 def get_front_videos(org_id: str, key_id: str):
-    """获取指定org_id和key_id下的所有front视频文件"""
+    """Get all front video files under specified org_id and key_id"""
     videos = s3_video_manager.list_front_videos(org_id, key_id)
     return {"videos": videos}
 
 @app.get("/api/video/orgs/{org_id}/keys/{key_id}/videos/all")
 def get_all_videos(org_id: str, key_id: str):
-    """获取指定org_id和key_id下的所有视频文件，按类型分类"""
+    """Get all video files under specified org_id and key_id, categorized by type"""
     videos = s3_video_manager.list_all_videos_by_org_key(org_id, key_id)
     return {"videos": videos}
 
 @app.get("/api/video/url/{key:path}")
 def get_video_url(key: str):
-    """获取视频文件的预签名URL"""
+    """Get presigned URL for video file"""
     url = s3_video_manager.get_video_url(key)
     if url:
         return {"url": url, "success": True}
@@ -380,7 +380,7 @@ def get_video_url(key: str):
 
 @app.post("/api/video/download-to-local")
 def download_video_to_local(data: dict):
-    """下载S3视频到本地并返回本地静态URL"""
+    """Download S3 video to local and return local static URL"""
     key = data.get("key")
     if not key:
         return {"success": False, "error": "Missing key"}
@@ -389,7 +389,7 @@ def download_video_to_local(data: dict):
     os.makedirs(local_dir, exist_ok=True)
     filename = os.path.basename(key)
     local_path = os.path.join(local_dir, filename)
-    # 如果本地已存在则不重复下载
+    # Skip download if file already exists locally
     if not os.path.exists(local_path):
         s3 = boto3.client("s3")
         try:
@@ -405,16 +405,16 @@ def extract_frames_from_s3(
     fps: int = Body(3)
 ):
     print(f"Extracting frames from {s3_key} with fps {fps}")
-    # 1. 直接使用完整的S3 key
-    # 2. 获取presigned URL
+    # 1. Directly use complete S3 key
+    # 2. Get presigned URL
     s3_url = s3_video_manager.get_video_url(s3_key)
     if not s3_url:
         return {"error": "Failed to generate presigned URL"}
-    # 3. 生成唯一输出目录
+    # 3. Generate unique output directory
     session_id = str(uuid.uuid4())
     output_dir = os.path.join(STATIC_DIR, "frames", session_id)
     os.makedirs(output_dir, exist_ok=True)
-    # 4. ffmpeg抽帧
+    # 4. ffmpeg frame extraction
     cmd = [
         "ffmpeg", "-y", "-i", s3_url, "-vf", f"fps={fps}",
         os.path.join(output_dir, "frame_%05d.jpg")
@@ -423,7 +423,7 @@ def extract_frames_from_s3(
         subprocess.run(cmd, check=True)
     except Exception as e:
         return {"error": f"ffmpeg failed: {str(e)}"}
-    # 5. 返回图片URL
+    # 5. Return image URLs
     rel_dir = f"frames/{session_id}"
     urls = [f"/static/{rel_dir}/{f}" for f in sorted(os.listdir(output_dir)) if f.endswith('.jpg')]
     return {"frames": urls}

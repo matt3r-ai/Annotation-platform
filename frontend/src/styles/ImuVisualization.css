@@ -1,0 +1,427 @@
+/* IMU Visualization Styles */
+
+.imu-visualization {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+.imu-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid #ecf0f1;
+}
+
+.imu-header h3 {
+  margin: 0;
+  color: #2c3e50;
+  font-size: 20px;
+}
+
+.imu-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.save-segment-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: transform 0.2s;
+}
+
+.save-segment-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.save-segment-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.imu-charts-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.channel-chart {
+  background: white;
+  border-radius: 6px;
+  padding: 10px;
+  border-left: 4px solid #3498db;
+  min-height: 140px;
+}
+
+.channel-chart h4 {
+  margin: 0 0 10px 0;
+  color: #2c3e50;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.timeline-container {
+  background: white;
+  border-radius: 6px;
+  padding: 10px;
+  border-left: 4px solid #e67e22;
+  margin-top: 10px;
+  margin-bottom: 15px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  min-height: 100px;
+  border: 2px solid #e67e22;
+  width: 100%;
+}
+
+.timeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  width: 100%;
+}
+
+.timeline-header h4 {
+  margin: 0;
+  color: #2c3e50;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.time-display {
+  display: flex;
+  gap: 5px;
+  color: #666;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.progress-bar {
+  position: relative;
+  height: 20px;
+  margin-left: 70px;  /* 让滑块往右边移动 */
+  margin-right: 40px;  /* 让滑块往右边移动 */
+
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(45deg, #64b5f6, #42a5f5);
+  border-radius: 4px;
+  width: 100%;
+  opacity: 0.3;
+}
+
+.progress-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 3;
+}
+
+.selected-thumb {
+  background: #f39c12;
+  border: 2px solid white;
+  z-index: 4;
+}
+
+
+
+.start-thumb {
+  background: #e74c3c;
+  border: 2px solid white;
+}
+
+.end-thumb {
+  background: #27ae60;
+  border: 2px solid white;
+}
+
+.progress-selection {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(52, 152, 219, 0.3);
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.timeline-scale {
+  display: flex;
+  justify-content: space-between;
+  color: #666;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 5px;
+}
+
+.scale-mark {
+  flex: 1;
+  text-align: center;
+}
+
+.imu-marking-controls {
+  margin-top: 20px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  border-left: 4px solid #e67e22;
+}
+
+.marking-buttons {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.mark-btn {
+  padding: 8px 16px;
+  border: 2px solid #3498db;
+  background: #3498db;
+  color: white;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: bold;
+}
+
+.mark-btn:hover {
+  background: #2980b9;
+  border-color: #2980b9;
+}
+
+.mark-btn.marked {
+  background: #27ae60;
+  border-color: #27ae60;
+}
+
+.mark-btn.marked:hover {
+  background: #229954;
+  border-color: #229954;
+}
+
+.save-segment-btn {
+  padding: 8px 16px;
+  border: 2px solid #e67e22;
+  background: #e67e22;
+  color: white;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: bold;
+}
+
+.save-segment-btn:hover:not(:disabled) {
+  background: #d35400;
+  border-color: #d35400;
+}
+
+.save-segment-btn:disabled {
+  background: #7f8c8d;
+  border-color: #7f8c8d;
+  cursor: not-allowed;
+}
+
+.marking-status {
+  display: flex;
+  gap: 15px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+.marking-status .status-item {
+  background: rgba(52, 152, 219, 0.2);
+  padding: 4px 8px;
+  border-radius: 3px;
+  border: 1px solid rgba(52, 152, 219, 0.3);
+}
+
+.marking-status .status-item.selected {
+  background: rgba(243, 156, 18, 0.2);
+  color: #e67e22;
+  font-weight: bold;
+  border-color: rgba(243, 156, 18, 0.3);
+}
+
+
+
+.imu-placeholder {
+  background: white;
+  border-radius: 8px;
+  padding: 40px;
+  text-align: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.placeholder-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+}
+
+.placeholder-icon {
+  font-size: 48px;
+  color: #bdc3c7;
+}
+
+.placeholder-content p {
+  margin: 0;
+  color: #7f8c8d;
+  font-size: 16px;
+}
+
+.imu-tooltip {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.tooltip-time {
+  font-weight: bold;
+  margin: 0 0 5px 0;
+  color: #2c3e50;
+}
+
+.imu-tooltip p {
+  margin: 2px 0;
+  font-size: 12px;
+}
+
+.saved-segments {
+  margin-top: 20px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.segments-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.segments-title {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 14px;
+}
+
+.segments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.saved-segment-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: white;
+  border-radius: 4px;
+  padding: 10px;
+  border: 1px solid #dee2e6;
+}
+
+.segment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.segment-time {
+  font-weight: 500;
+  color: #2c3e50;
+  font-size: 13px;
+}
+
+.segment-duration {
+  color: #7f8c8d;
+  font-size: 12px;
+}
+
+.remove-segment-btn {
+  background: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s;
+}
+
+.remove-segment-btn:hover {
+  background: #c0392b;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .imu-visualization {
+    padding: 15px;
+  }
+  
+  .imu-header {
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  
+  .selected-range {
+    flex-direction: column;
+    gap: 5px;
+    align-items: flex-start;
+  }
+  
+  .chart-container {
+    padding: 10px;
+  }
+} 

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchScenarios, saveReviewData, processScenarios, getVideoUrl, getActivityTimeline } from '../services/scenarioApi';
+import { fetchScenarios, saveReviewData, processScenarios, getVideoUrl, getActivityTimeline, extractImuData } from '../services/scenarioApi';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import FitBoundsOnPoints from '../components/FitBoundsOnPoints';
+import ImuVisualization from '../components/ImuVisualization';
 import L from 'leaflet';
 import '../styles/ScenarioAnalysisTool.css';
 
@@ -23,7 +24,10 @@ const ScenarioAnalysisTool = () => {
   // Step 1: Fetch scenarios
   const [eventTypes, setEventTypes] = useState(['fcw', 'harsh-brake']);
   const [newEventType, setNewEventType] = useState('');
-  const [daysBack, setDaysBack] = useState(7);
+  const [dateRange, setDateRange] = useState({
+    startDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 7 days ago
+    endDate: new Date().toISOString().split('T')[0] // today
+  });
   const [limit, setLimit] = useState(50);
   const [scenarios, setScenarios] = useState([]);
   
@@ -49,22 +53,32 @@ const ScenarioAnalysisTool = () => {
   const [segmentEnd, setSegmentEnd] = useState(0);
   const videoRef = useRef(null);
 
-  // New labeling functionality - shared between video and GPS modes
+  // New labeling functionality - shared between video, GPS, and IMU modes
   const [markedStartTime, setMarkedStartTime] = useState(null);
   const [markedEndTime, setMarkedEndTime] = useState(null);
+  const [selectedTime, setSelectedTime] = useState(null);
+  const [videoStartTimeForSync, setVideoStartTimeForSync] = useState(null); // 用于同步的临时开始时间
   const [savedSegments, setSavedSegments] = useState([]);
   const [allLabeledData, setAllLabeledData] = useState([]);
+  
+  // GPS time alignment functionality
+  const [gpsStartTime, setGpsStartTime] = useState(null);
+  const [gpsEndTime, setGpsEndTime] = useState(null);
   
 
 
   // GPS functionality
-  const [viewMode, setViewMode] = useState('video'); // 'video' or 'gps'
+  const [viewMode, setViewMode] = useState('video'); // 'video', 'gps', or 'imu'
   const [gpsPoints, setGpsPoints] = useState([]);
   const [selectedGpsPoints, setSelectedGpsPoints] = useState([]);
   const [clipResult, setClipResult] = useState(null);
   const [previewData, setPreviewData] = useState(null);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const mapRef = useRef(null);
+  
+  // IMU functionality
+  const [imuData, setImuData] = useState(null);
+  const [imuLoading, setImuLoading] = useState(false);
   
   // 地图缩放控制 - 只有按住Alt键才能缩放
   useEffect(() => {
@@ -158,7 +172,8 @@ const ScenarioAnalysisTool = () => {
     try {
       const query = {
         event_types: eventTypes,
-        days_back: daysBack,
+        start_date: dateRange.startDate,
+        end_date: dateRange.endDate,
         limit: limit
       };
       
@@ -259,6 +274,22 @@ const ScenarioAnalysisTool = () => {
             console.error('Error loading GPS data:', gpsError);
           }
         }
+        
+        // 提取IMU数据
+        if (scenario.data_links && scenario.data_links.imu) {
+          try {
+            setImuLoading(true);
+            const imuResult = await extractImuData(scenario.id);
+            if (imuResult.status === 'success') {
+              setImuData(imuResult.imu_data);
+              console.log('IMU data loaded:', imuResult.imu_data);
+            }
+          } catch (imuError) {
+            console.error('Error loading IMU data:', imuError);
+          } finally {
+            setImuLoading(false);
+          }
+        }
       } else {
         setVideoError(videoResult.message);
         setMessage(`❌ Error getting video URL: ${videoResult.message}`);
@@ -308,9 +339,26 @@ const ScenarioAnalysisTool = () => {
       // 避免重复选同一个点
       if (!selectedGpsPoints.find(p => p.timestamp === point.timestamp)) {
         setSelectedGpsPoints([...selectedGpsPoints, point]);
+        
+        // 同步到Video/IMU时间
+        const videoTime = convertGpsTimeToVideoTime(point.timestamp);
+        if (selectedGpsPoints.length === 0) {
+          // 第一个点设为开始时间
+          setMarkedStartTime(videoTime);
+          setGpsStartTime(point.timestamp);
+        } else {
+          // 第二个点设为结束时间
+          setMarkedEndTime(videoTime);
+          setGpsEndTime(point.timestamp);
+        }
       }
     } else {
       setSelectedGpsPoints([point]); // 超过2个则重置
+      // 重置Video/IMU时间
+      setMarkedStartTime(null);
+      setMarkedEndTime(null);
+      setGpsStartTime(null);
+      setGpsEndTime(null);
     }
   };
 
@@ -350,6 +398,27 @@ const ScenarioAnalysisTool = () => {
       };
       
       setSavedSegments([...savedSegments, newSegment]);
+      
+      // 更新annotations
+      const scenarioId = currentScenario.id;
+      const currentAnnotations = annotations[scenarioId] || [];
+      const newAnnotation = {
+        id: newSegment.id,
+        mode: 'gps',
+        startTime: Math.round(startPoint.timestamp),
+        endTime: Math.round(endPoint.timestamp),
+        localStartTime: relativeStartTime,
+        localEndTime: relativeEndTime,
+        startPoint: startPoint,
+        endPoint: endPoint,
+        timestamp: new Date().toISOString()
+      };
+      
+      setAnnotations({
+        ...annotations,
+        [scenarioId]: [...currentAnnotations, newAnnotation]
+      });
+      
       setSelectedGpsPoints([]);
     }
   };
@@ -538,45 +607,169 @@ const ScenarioAnalysisTool = () => {
   // New labeling functions
   const handleMarkStart = () => {
     setMarkedStartTime(currentTime);
+    setVideoStartTimeForSync(currentTime); // 保存开始时间用于同步
+    
+    // 同步到GPS时间
+    const gpsTime = convertVideoTimeToGpsTime(currentTime);
+    const nearestGpsPoint = findNearestGpsPoint(currentTime);
+    if (nearestGpsPoint) {
+      setGpsStartTime(nearestGpsPoint.timestamp);
+      // 自动选中对应的GPS点
+      setSelectedGpsPoints([nearestGpsPoint]);
+    }
+    
+    console.log('Video marked start time:', currentTime, 'GPS time:', gpsTime, 'Selected GPS point:', nearestGpsPoint);
   };
 
   const handleMarkEnd = () => {
     setMarkedEndTime(currentTime);
+    
+    // 同步到GPS时间
+    const gpsTime = convertVideoTimeToGpsTime(currentTime);
+    const nearestGpsPoint = findNearestGpsPoint(currentTime);
+    if (nearestGpsPoint) {
+      setGpsEndTime(nearestGpsPoint.timestamp);
+      
+      // 获取开始时间对应的GPS点 - 使用保存的开始时间
+      const startGpsPoint = findNearestGpsPoint(videoStartTimeForSync || 0);
+      
+      console.log('Mark end debug:', {
+        currentTime,
+        videoStartTimeForSync,
+        startGpsPoint: startGpsPoint?.timestamp,
+        endGpsPoint: nearestGpsPoint?.timestamp,
+        areDifferent: startGpsPoint && startGpsPoint.timestamp !== nearestGpsPoint.timestamp
+      });
+      
+      // 如果开始和结束是不同的GPS点，则选中两个点
+      if (startGpsPoint && startGpsPoint.timestamp !== nearestGpsPoint.timestamp) {
+        setSelectedGpsPoints([startGpsPoint, nearestGpsPoint]);
+        console.log('Selected two GPS points:', startGpsPoint.timestamp, nearestGpsPoint.timestamp);
+      } else {
+        setSelectedGpsPoints([nearestGpsPoint]);
+        console.log('Selected one GPS point:', nearestGpsPoint.timestamp);
+      }
+    }
+    
+    console.log('Video marked end time:', currentTime, 'GPS time:', gpsTime, 'Selected GPS points:', selectedGpsPoints.length);
   };
 
+  const [segmentDescription, setSegmentDescription] = useState('');
+  const [showDescriptionModal, setShowDescriptionModal] = useState(false);
+  const [pendingSegment, setPendingSegment] = useState(null);
+  const [annotations, setAnnotations] = useState({}); // 存储每个scenario的标注信息
+
   const handleSaveSegment = () => {
+    if (markedStartTime !== null && markedEndTime !== null && markedStartTime < markedEndTime) {
+      setShowDescriptionModal(true);
+    }
+  };
+
+  const handleSaveSegmentWithDescription = () => {
     if (markedStartTime !== null && markedEndTime !== null && markedStartTime < markedEndTime) {
       // 从scenario对象中获取视频的开始时间
       const videoStartTime = currentScenario.start_time || 0;
       const globalStartTime = videoStartTime + markedStartTime;
       const globalEndTime = videoStartTime + markedEndTime;
       
-      // 调试信息：打印scenario对象的结构
-      console.log('Current scenario object:', currentScenario);
-      console.log('Video start time:', videoStartTime);
-      console.log('Marked times:', { start: markedStartTime, end: markedEndTime });
-      console.log('Global times:', { start: globalStartTime, end: globalEndTime });
-      
       const newSegment = {
         id: Date.now(),
         scenarioId: currentScenario.id,
         videoName: currentScenario.video_name || `Scenario_${currentScenario.id}`,
-        startTime: Math.round(globalStartTime), // 确保是整数
-        endTime: Math.round(globalEndTime), // 确保是整数
+        startTime: Math.round(globalStartTime),
+        endTime: Math.round(globalEndTime),
         localStartTime: markedStartTime,
         localEndTime: markedEndTime,
         scenario: currentScenario,
-        mode: 'video'
+        mode: 'video',
+        description: segmentDescription
       };
       
       setSavedSegments([...savedSegments, newSegment]);
+      
+      // 更新annotations
+      const scenarioId = currentScenario.id;
+      const currentAnnotations = annotations[scenarioId] || [];
+      const newAnnotation = {
+        id: newSegment.id,
+        mode: 'video',
+        startTime: Math.round(globalStartTime),
+        endTime: Math.round(globalEndTime),
+        localStartTime: markedStartTime,
+        localEndTime: markedEndTime,
+        description: segmentDescription,
+        timestamp: new Date().toISOString()
+      };
+      
+      setAnnotations({
+        ...annotations,
+        [scenarioId]: [...currentAnnotations, newAnnotation]
+      });
+      
       setMarkedStartTime(null);
       setMarkedEndTime(null);
+      setSegmentDescription('');
+      setShowDescriptionModal(false);
     }
   };
 
   const handleRemoveSegment = (segmentId) => {
     setSavedSegments(savedSegments.filter(seg => seg.id !== segmentId));
+  };
+
+  const generateAnnotationsJson = () => {
+    const annotationsData = {};
+    
+    Object.keys(annotations).forEach(scenarioId => {
+      const scenarioAnnotations = annotations[scenarioId];
+      if (scenarioAnnotations && scenarioAnnotations.length > 0) {
+        annotationsData[scenarioId] = scenarioAnnotations.map(annotation => ({
+          id: annotation.id,
+          start_time: annotation.startTime,
+          end_time: annotation.endTime,
+          local_start_time: annotation.localStartTime,
+          local_end_time: annotation.localEndTime,
+          description: annotation.description || null,
+          created_at: annotation.timestamp
+        }));
+      }
+    });
+    
+    return annotationsData;
+  };
+
+  const writeAnnotationsToDb = async () => {
+    const annotationsJson = generateAnnotationsJson();
+    
+    if (Object.keys(annotationsJson).length === 0) {
+      alert('No annotations to write back. Please create some annotations first.');
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/scenarios/annotations/write-back', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          annotations: annotationsJson
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        alert(`✅ Successfully wrote back annotations!\n\n${result.message}\nUpdated ${result.updated_count} scenarios.`);
+        console.log('Write-back result:', result);
+      } else {
+        const errorData = await response.json();
+        alert(`❌ Failed to write back annotations: ${errorData.detail}`);
+        console.error('Write-back error:', errorData);
+      }
+    } catch (error) {
+      alert(`❌ Network error: ${error.message}`);
+      console.error('Write-back network error:', error);
+    }
   };
 
   const handleSaveToFile = () => {
@@ -607,7 +800,8 @@ const ScenarioAnalysisTool = () => {
         osm_tags: scenario.osm_tags || scenario.osmTags || '',
         interesting: scenario.interesting || '',
         segment_start: segment.startTime,
-        segment_end: segment.endTime
+        segment_end: segment.endTime,
+        description: segment.description || ''
       };
       
       console.log('CSV row:', csvRow);
@@ -617,7 +811,7 @@ const ScenarioAnalysisTool = () => {
     const csvHeaders = [
       'id', 'org_id', 'key_id', 'vin', 'start_time', 'end_time', 
       'data_links', 'data_source_status', 'dmp_status', 'created_at', 
-      'updated_at', 'osm_tags', 'interesting', 'segment_start', 'segment_end'
+      'updated_at', 'osm_tags', 'interesting', 'segment_start', 'segment_end', 'description'
     ];
 
     const csvContent = [
@@ -654,26 +848,8 @@ const ScenarioAnalysisTool = () => {
 
   // Get activity icon
   const getActivityIcon = (activityType) => {
-    const iconMap = {
-      'fcw': '⚠️',
-      'harsh-brake': '🛑',
-      'lane-departure': '🛣️',
-      'left-turn': '↶',
-      'right-turn': '↷',
-      'u-turn': '↻',
-      'pedestrian': '🚶',
-      'traffic-light': '🚦',
-      'stop-sign': '🛑',
-      'yield-sign': '⚠️',
-      'speed-limit': '🚗',
-      'construction-zone': '🚧',
-      'school-zone': '🏫',
-      'emergency-vehicle': '🚨',
-      'weather-condition': '🌧️',
-      'road-condition': '🛣️',
-      'unknown': '❓'
-    };
-    return iconMap[activityType] || '❓';
+    // 所有活动类型都返回空字符串，因为现在用CSS样式显示红色小点
+    return '';
   };
 
   // Handle processing scenarios
@@ -715,6 +891,64 @@ const ScenarioAnalysisTool = () => {
     } catch (error) {
       return timestamp;
     }
+  };
+
+  // Find nearest GPS point to a given time
+  const findNearestGpsPoint = (targetTime) => {
+    if (!gpsPoints || gpsPoints.length === 0) return null;
+    
+    // Convert target time to seconds if it's not already
+    const targetSeconds = typeof targetTime === 'number' ? targetTime : parseFloat(targetTime);
+    
+    // 如果targetTime是相对时间（从0开始），需要转换为绝对时间
+    const videoStartTime = currentScenario.start_time || 0;
+    const absoluteTargetTime = targetSeconds + videoStartTime;
+    
+    let nearestPoint = gpsPoints[0];
+    let minDistance = Math.abs(nearestPoint.timestamp - absoluteTargetTime);
+    
+    for (const point of gpsPoints) {
+      const distance = Math.abs(point.timestamp - absoluteTargetTime);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestPoint = point;
+      }
+    }
+    
+    console.log('findNearestGpsPoint debug:', {
+      targetTime,
+      targetSeconds,
+      videoStartTime,
+      absoluteTargetTime,
+      nearestPoint: nearestPoint?.timestamp,
+      minDistance
+    });
+    
+    return nearestPoint;
+  };
+
+  // Convert GPS time to video/IMU time
+  const convertGpsTimeToVideoTime = (gpsTime) => {
+    if (!gpsPoints || gpsPoints.length === 0) return gpsTime;
+    
+    // Find the GPS point with this timestamp
+    const gpsPoint = gpsPoints.find(p => p.timestamp === gpsTime);
+    if (!gpsPoint) return gpsTime;
+    
+    // Calculate relative time (assuming first GPS point is at time 0)
+    const firstGpsTime = gpsPoints[0].timestamp;
+    return gpsPoint.timestamp - firstGpsTime;
+  };
+
+  // Convert video/IMU time to GPS time
+  const convertVideoTimeToGpsTime = (videoTime) => {
+    if (!gpsPoints || gpsPoints.length === 0) return videoTime;
+    
+    // Find nearest GPS point to this video time
+    const nearestPoint = findNearestGpsPoint(videoTime);
+    if (!nearestPoint) return videoTime;
+    
+    return nearestPoint.timestamp;
   };
 
   // Get event type icon
@@ -907,16 +1141,34 @@ const ScenarioAnalysisTool = () => {
           </div>
           
           <div className="form-row">
-            <div className="form-group">
-              <label>Days Back:</label>
-              <input
-                type="number"
-                value={daysBack}
-                onChange={(e) => setDaysBack(parseInt(e.target.value))}
-                min="1"
-                max="30"
-                className="number-input"
-              />
+            <div className="form-group date-range-group">
+              <label>Date Range:</label>
+              <div className="date-inputs-container">
+                <input
+                  type="date"
+                  value={dateRange.startDate}
+                  onChange={(e) => setDateRange({
+                    ...dateRange,
+                    startDate: e.target.value
+                  })}
+                  max={dateRange.endDate}
+                  className="date-input compact"
+                  placeholder="Start"
+                />
+                <span className="date-separator">to</span>
+                <input
+                  type="date"
+                  value={dateRange.endDate}
+                  onChange={(e) => setDateRange({
+                    ...dateRange,
+                    endDate: e.target.value
+                  })}
+                  min={dateRange.startDate}
+                  max={new Date().toISOString().split('T')[0]}
+                  className="date-input compact"
+                  placeholder="End"
+                />
+              </div>
             </div>
             
             <div className="form-group">
@@ -1078,16 +1330,32 @@ const ScenarioAnalysisTool = () => {
             <div className="view-mode-toggle">
               <button 
                 className={`toggle-btn ${viewMode === 'video' ? 'active' : ''}`}
-                onClick={() => setViewMode('video')}
+                onClick={() => {
+                  setViewMode('video');
+                  // 保持标记状态，因为现在是共享的
+                }}
               >
                 🎬 Video Mode
               </button>
               <button 
                 className={`toggle-btn ${viewMode === 'gps' ? 'active' : ''}`}
-                onClick={() => setViewMode('gps')}
+                onClick={() => {
+                  setViewMode('gps');
+                  // 保持标记状态，因为现在是共享的
+                }}
                 disabled={gpsPoints.length === 0}
               >
                 🗺️ GPS Mode {gpsPoints.length > 0 && `(${gpsPoints.length} points)`}
+              </button>
+              <button 
+                className={`toggle-btn ${viewMode === 'imu' ? 'active' : ''}`}
+                onClick={() => {
+                  setViewMode('imu');
+                  // 保持标记状态，因为现在是共享的
+                }}
+                disabled={!imuData || (!imuData.gyro && !imuData.accel)}
+              >
+                📊 IMU Mode {imuData && (imuData.gyro || imuData.accel) && '(Available)'}
               </button>
             </div>
           </div>
@@ -1163,6 +1431,36 @@ const ScenarioAnalysisTool = () => {
                         </div>
                       </div>
                     ))}
+                    
+                    {/* IMU Shared Markers */}
+                    {markedStartTime !== null && (
+                      <div
+                        className="imu-marker start-marker"
+                        style={{
+                          left: videoDuration > 0 ? `${(markedStartTime / videoDuration) * 100}%` : '0%'
+                        }}
+                        title={`IMU Start: ${formatTime(markedStartTime)}`}
+                      ></div>
+                    )}
+                    {markedEndTime !== null && (
+                      <div
+                        className="imu-marker end-marker"
+                        style={{
+                          left: videoDuration > 0 ? `${(markedEndTime / videoDuration) * 100}%` : '0%'
+                        }}
+                        title={`IMU End: ${formatTime(markedEndTime)}`}
+                      ></div>
+                    )}
+                    {markedStartTime !== null && markedEndTime !== null && markedStartTime < markedEndTime && (
+                      <div
+                        className="imu-selection-area"
+                        style={{
+                          left: videoDuration > 0 ? `${(markedStartTime / videoDuration) * 100}%` : '0%',
+                          width: videoDuration > 0 ? `${((markedEndTime - markedStartTime) / videoDuration) * 100}%` : '0%'
+                        }}
+                      ></div>
+                    )}
+                    
                     <input
                       type="range"
                       min="0"
@@ -1226,16 +1524,79 @@ const ScenarioAnalysisTool = () => {
                     </div>
                   </div>
                   
+                  {/* Description Modal */}
+                  {showDescriptionModal && (
+                    <div className="description-modal-overlay">
+                      <div className="description-modal">
+                        <div className="modal-header">
+                          <h3>📝 Add Segment Description</h3>
+                          <button 
+                            className="close-modal-btn"
+                            onClick={() => {
+                              setShowDescriptionModal(false);
+                              setSegmentDescription('');
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="modal-content">
+                          <div className="segment-info-display">
+                            <span>Time Range: {formatTime(markedStartTime)} - {formatTime(markedEndTime)}</span>
+                            <span>Duration: {formatTime(markedEndTime - markedStartTime)}</span>
+                          </div>
+                          <div className="description-input-group">
+                            <label htmlFor="segment-description">Description:</label>
+                            <textarea
+                              id="segment-description"
+                              value={segmentDescription}
+                              onChange={(e) => setSegmentDescription(e.target.value)}
+                              placeholder="Enter a description for this segment..."
+                              rows="3"
+                              className="description-textarea"
+                            />
+                          </div>
+                        </div>
+                        <div className="modal-actions">
+                          <button 
+                            className="cancel-btn"
+                            onClick={() => {
+                              setShowDescriptionModal(false);
+                              setSegmentDescription('');
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button 
+                            className="save-btn"
+                            onClick={handleSaveSegmentWithDescription}
+                            disabled={!segmentDescription.trim()}
+                          >
+                            Save Segment
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
                   {savedSegments.length > 0 && (
                     <div className="saved-segments">
                       <div className="segments-header">
                         <span className="segments-title">📝 Saved Segments ({savedSegments.length})</span>
-                        <button 
-                          className="save-file-btn"
-                          onClick={handleSaveToFile}
-                        >
-                          💾 Save File
-                        </button>
+                        <div className="segment-actions">
+                          <button 
+                            className="write-back-btn"
+                            onClick={writeAnnotationsToDb}
+                          >
+                            💾 Write Back
+                          </button>
+                          <button 
+                            className="save-file-btn"
+                            onClick={handleSaveToFile}
+                          >
+                            💾 Save File
+                          </button>
+                        </div>
                       </div>
                       <div className="segments-list">
                         {savedSegments.map((segment) => (
@@ -1279,6 +1640,85 @@ const ScenarioAnalysisTool = () => {
                   )}
                 </div>
               </div>
+            )
+          ) : viewMode === 'imu' ? (
+            // IMU Mode
+            imuLoading ? (
+              <div className="imu-placeholder">
+                <div className="placeholder-content">
+                  <div className="placeholder-icon">⏳</div>
+                  <p>Loading IMU data...</p>
+                </div>
+              </div>
+            ) : (
+              <ImuVisualization
+                imuData={imuData}
+                savedSegments={savedSegments}
+                onSaveSegment={(segmentData) => {
+                  const videoStartTime = currentScenario.start_time || 0;
+                  const globalStartTime = videoStartTime + segmentData.startTime;
+                  const globalEndTime = videoStartTime + segmentData.endTime;
+                  
+                  const newSegment = {
+                    id: Date.now(),
+                    scenarioId: currentScenario.id,
+                    videoName: currentScenario.video_name || `Scenario_${currentScenario.id}`,
+                    startTime: Math.round(globalStartTime),
+                    endTime: Math.round(globalEndTime),
+                    localStartTime: segmentData.startTime,
+                    localEndTime: segmentData.endTime,
+                    scenario: currentScenario,
+                    mode: 'imu'
+                  };
+                  
+                  setSavedSegments([...savedSegments, newSegment]);
+                  
+                  // 更新annotations
+                  const scenarioId = currentScenario.id;
+                  const currentAnnotations = annotations[scenarioId] || [];
+                  const newAnnotation = {
+                    id: newSegment.id,
+                    mode: 'imu',
+                    startTime: Math.round(globalStartTime),
+                    endTime: Math.round(globalEndTime),
+                    localStartTime: segmentData.startTime,
+                    localEndTime: segmentData.endTime,
+                    timestamp: new Date().toISOString()
+                  };
+                  
+                  setAnnotations({
+                    ...annotations,
+                    [scenarioId]: [...currentAnnotations, newAnnotation]
+                  });
+                }}
+                onRemoveSegment={handleRemoveSegment}
+                onSaveToFile={handleSaveToFile}
+                onWriteBack={writeAnnotationsToDb}
+                markedStartTime={markedStartTime}
+                setMarkedStartTime={setMarkedStartTime}
+                markedEndTime={markedEndTime}
+                setMarkedEndTime={setMarkedEndTime}
+                selectedTime={selectedTime}
+                setSelectedTime={setSelectedTime}
+                onTimeSync={(type, time) => {
+                  // IMU时间同步到GPS
+                  const nearestGpsPoint = findNearestGpsPoint(time);
+                  if (nearestGpsPoint) {
+                    if (type === 'start') {
+                      setGpsStartTime(nearestGpsPoint.timestamp);
+                      setSelectedGpsPoints([nearestGpsPoint]);
+                    } else if (type === 'end') {
+                      setGpsEndTime(nearestGpsPoint.timestamp);
+                      const startPoint = selectedGpsPoints.length > 0 ? selectedGpsPoints[0] : null;
+                      if (startPoint && startPoint.timestamp !== nearestGpsPoint.timestamp) {
+                        setSelectedGpsPoints([startPoint, nearestGpsPoint]);
+                      } else {
+                        setSelectedGpsPoints([nearestGpsPoint]);
+                      }
+                    }
+                  }
+                }}
+              />
             )
           ) : (
             // GPS Mode
@@ -1378,17 +1818,47 @@ const ScenarioAnalysisTool = () => {
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                       attribution='&copy; OpenStreetMap contributors'
                     />
-                    {gpsPoints.map((point, idx) => (
-                      <Marker 
-                        key={idx} 
-                        position={[point.lat, point.lon]} 
-                        eventHandlers={{ click: () => handleGpsMarkerClick(point) }}
-                      >
-                        <Popup>
-                          {`Timestamp: ${point.timestamp}`}
-                        </Popup>
-                      </Marker>
-                    ))}
+                    {gpsPoints.map((point, idx) => {
+                      // 检查这个点是否被选中
+                      const isSelected = selectedGpsPoints.find(p => p.timestamp === point.timestamp);
+                      const selectedIndex = selectedGpsPoints.findIndex(p => p.timestamp === point.timestamp);
+                      
+                      // 确定标记的颜色
+                      let markerColor = '#95a5a6'; // 默认灰色
+                      if (isSelected) {
+                        if (selectedIndex === 0) {
+                          markerColor = '#e74c3c'; // 红色 - 开始点
+                        } else {
+                          markerColor = '#3498db'; // 蓝色 - 结束点
+                        }
+                      }
+                      
+                      return (
+                        <Marker 
+                          key={idx} 
+                          position={[point.lat, point.lon]} 
+                          eventHandlers={{ click: () => handleGpsMarkerClick(point) }}
+                          icon={L.divIcon({
+                            className: 'custom-marker',
+                            html: `<div style="
+                              width: 12px; 
+                              height: 12px; 
+                              background-color: ${markerColor}; 
+                              border: 2px solid white; 
+                              border-radius: 50%; 
+                              box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                              cursor: pointer;
+                            "></div>`,
+                            iconSize: [12, 12],
+                            iconAnchor: [6, 6]
+                          })}
+                        >
+                          <Popup>
+                            {`Timestamp: ${point.timestamp}`}
+                          </Popup>
+                        </Marker>
+                      );
+                    })}
                     <FitBoundsOnPoints points={gpsPoints} />
                   </MapContainer>
                 </div>
@@ -1427,10 +1897,10 @@ const ScenarioAnalysisTool = () => {
                             return (
                               <>
                                 <span className="status-item">
-                                  Start: {formatTime(relativeStartTime)} ({Math.round(relativeStartTime)}s)
+                                  GPS Start: {formatTime(relativeStartTime)} ({Math.round(relativeStartTime)}s)
                                 </span>
                                 <span className="status-item">
-                                  End: {formatTime(relativeEndTime)} ({Math.round(relativeEndTime)}s)
+                                  GPS End: {formatTime(relativeEndTime)} ({Math.round(relativeEndTime)}s)
                                 </span>
                                 <span className="status-item">
                                   Duration: {formatTime(duration)}
@@ -1440,6 +1910,8 @@ const ScenarioAnalysisTool = () => {
                           })()}
                         </>
                       )}
+                      
+
                     </div>
                   </div>
                   
@@ -1485,12 +1957,20 @@ const ScenarioAnalysisTool = () => {
                     <div className="saved-segments">
                       <div className="segments-header">
                         <span className="segments-title">📝 Saved Segments ({savedSegments.length})</span>
-                        <button 
-                          className="save-file-btn"
-                          onClick={handleSaveToFile}
-                        >
-                          💾 Save File
-                        </button>
+                        <div className="segment-actions">
+                          <button 
+                            className="write-back-btn"
+                            onClick={writeAnnotationsToDb}
+                          >
+                            💾 Write Back
+                          </button>
+                          <button 
+                            className="save-file-btn"
+                            onClick={handleSaveToFile}
+                          >
+                            💾 Save File
+                          </button>
+                        </div>
                       </div>
                       <div className="segments-list">
                         {savedSegments.map((segment) => (

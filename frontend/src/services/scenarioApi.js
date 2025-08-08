@@ -2,7 +2,7 @@ import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// 获取场景列表
+// Get scenario list
 export const fetchScenarios = async (queryParams) => {
   try {
     const response = await axios.post(`${API_BASE_URL}/api/scenarios/fetch`, queryParams);
@@ -13,7 +13,7 @@ export const fetchScenarios = async (queryParams) => {
   }
 };
 
-// 保存审核数据
+// Save review data
 export const saveReviewData = async (reviewData) => {
   try {
     const response = await axios.post(`${API_BASE_URL}/api/scenarios/review`, reviewData);
@@ -24,7 +24,7 @@ export const saveReviewData = async (reviewData) => {
   }
 };
 
-// 处理场景
+// Process scenarios
 export const processScenarios = async (processParams) => {
   try {
     const response = await axios.post(`${API_BASE_URL}/api/scenarios/process`, processParams);
@@ -35,7 +35,7 @@ export const processScenarios = async (processParams) => {
   }
 };
 
-// 获取处理状态
+// Get processing status
 export const getProcessingStatus = async (scenarioId) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/status/${scenarioId}`);
@@ -46,7 +46,7 @@ export const getProcessingStatus = async (scenarioId) => {
   }
 };
 
-// 获取场景列表
+// Get scenario list
 export const listScenarios = async () => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/list`);
@@ -57,7 +57,7 @@ export const listScenarios = async () => {
   }
 };
 
-// 下载视频
+// Download video
 export const downloadVideo = async (scenarioId) => {
   try {
     const response = await axios.post(`${API_BASE_URL}/api/scenarios/download-video/${scenarioId}`);
@@ -68,7 +68,7 @@ export const downloadVideo = async (scenarioId) => {
   }
 };
 
-// 获取视频状态
+// Get video status
 export const getVideoStatus = async (scenarioId) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/video-status/${scenarioId}`);
@@ -79,7 +79,7 @@ export const getVideoStatus = async (scenarioId) => {
   }
 };
 
-// 获取视频URL
+// Get video URL
 export const getVideoUrl = async (scenarioId) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/video-url/${scenarioId}`);
@@ -90,7 +90,7 @@ export const getVideoUrl = async (scenarioId) => {
   }
 };
 
-// 获取activity时间节点
+// Get activity timeline
 export const getActivityTimeline = async (scenarioId) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/activity-timeline/${scenarioId}`);
@@ -101,7 +101,7 @@ export const getActivityTimeline = async (scenarioId) => {
   }
 };
 
-// 测试S3访问
+// Test S3 access
 export const testS3Access = async () => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/scenarios/test-s3-access`);
@@ -110,4 +110,19 @@ export const testS3Access = async () => {
     console.error('Error testing S3 access:', error);
     throw error;
   }
-}; 
+};
+
+// Extract IMU data
+export const extractImuData = async (scenarioId) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/imu/extract`, {
+      scenario_id: scenarioId
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error extracting IMU data:', error);
+    throw error;
+  }
+};
+
+ 

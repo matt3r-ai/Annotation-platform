@@ -1,8 +1,8 @@
- import axios from 'axios';
+import axios from 'axios';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
 
-// 创建axios实例
+// Create axios instance
 const apiClient = axios.create({
   baseURL: API_BASE,
   timeout: 30000,
@@ -11,10 +11,10 @@ const apiClient = axios.create({
   },
 });
 
-// 请求拦截器
+// Request interceptor
 apiClient.interceptors.request.use(
   (config) => {
-    // 可以在这里添加认证token等
+    // Can add authentication token here
     return config;
   },
   (error) => {
@@ -22,7 +22,7 @@ apiClient.interceptors.request.use(
   }
 );
 
-// 响应拦截器
+// Response interceptor
 apiClient.interceptors.response.use(
   (response) => {
     return response;
@@ -33,20 +33,20 @@ apiClient.interceptors.response.use(
   }
 );
 
-// GPS相关API
+// GPS related API
 export const gpsAPI = {
   loadData: (params) => apiClient.post('/api/gps/load', params),
   clipVideo: (params) => apiClient.post('/api/video/clip', params),
 };
 
-// S3相关API
+// S3 related API
 export const s3API = {
   getOrgs: () => apiClient.get('/api/s3/orgs'),
   getKeys: (orgId) => apiClient.get(`/api/s3/orgs/${orgId}/keys`),
   getFiles: (orgId, keyId) => apiClient.get(`/api/s3/orgs/${orgId}/keys/${keyId}/files`),
 };
 
-// S3视频相关API
+// S3 video related API
 export const s3VideoAPI = {
   getOrgs: () => apiClient.get('/api/video/orgs'),
   getKeys: (orgId) => apiClient.get(`/api/video/orgs/${orgId}/keys`),
@@ -58,12 +58,12 @@ export const s3VideoAPI = {
     apiClient.post('/api/video/extract-frames', { s3_key, filename, fps }),
 };
 
-// 本地文件相关API
+// Local file related API
 export const localAPI = {
   clipVideo: (params) => apiClient.post('/api/local/clip', params),
 };
 
-// Object Detection相关API (为后续功能准备)
+// Object Detection related API (prepared for future features)
 export const detectionAPI = {
   uploadImage: (formData) => apiClient.post('/api/detection/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }

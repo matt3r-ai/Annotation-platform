@@ -10,7 +10,7 @@ class S3VideoManager:
         self.fs = s3fs.S3FileSystem()
 
     def list_org_ids(self) -> List[str]:
-        """列出所有org_id"""
+        """List all org_ids"""
         paginator = self.s3.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Delimiter="/")
         org_ids = []
@@ -21,7 +21,7 @@ class S3VideoManager:
         return org_ids
 
     def list_key_ids_by_org(self, org_id: str) -> List[str]:
-        """根据org_id列出所有key_id"""
+        """List all key_ids by org_id"""
         prefix = f"{org_id}/"
         paginator = self.s3.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix, Delimiter="/")
@@ -33,7 +33,7 @@ class S3VideoManager:
         return key_ids
 
     def list_front_videos(self, org_id: str, key_id: str) -> List[Dict[str, str]]:
-        """列出指定org_id和key_id下的所有front视频文件"""
+        """List all front video files under specified org_id and key_id"""
         prefix = f"{org_id}/{key_id}/"
         paginator = self.s3.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
@@ -44,7 +44,7 @@ class S3VideoManager:
                 key = obj["Key"]
                 filename = key.split("/")[-1]
                 
-                # 匹配front视频文件
+                # Match front video files
                 match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-front\.mp4", filename)
                 if match:
                     timestamp = match.group(1)
@@ -56,12 +56,12 @@ class S3VideoManager:
                         "last_modified": obj["LastModified"].isoformat()
                     })
         
-        # 按时间戳排序
+        # Sort by timestamp
         front_videos.sort(key=lambda x: x["timestamp"])
         return front_videos
 
     def get_video_url(self, key: str, expires_in: int = 3600) -> str:
-        """获取视频文件的预签名URL"""
+        """Get presigned URL for video file"""
         try:
             url = self.s3.generate_presigned_url(
                 'get_object',
@@ -74,7 +74,7 @@ class S3VideoManager:
             return None
 
     def get_video_info(self, key: str) -> Optional[Dict]:
-        """获取视频文件信息"""
+        """Get video file information"""
         try:
             response = self.s3.head_object(Bucket=self.bucket, Key=key)
             return {
@@ -87,7 +87,7 @@ class S3VideoManager:
             return None
 
     def list_all_videos_by_org_key(self, org_id: str, key_id: str) -> Dict[str, List[Dict]]:
-        """列出指定org_id和key_id下的所有视频文件，按类型分类"""
+        """List all video files under specified org_id and key_id, categorized by type"""
         prefix = f"{org_id}/{key_id}/"
         paginator = self.s3.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
@@ -105,7 +105,7 @@ class S3VideoManager:
                 key = obj["Key"]
                 filename = key.split("/")[-1]
                 
-                # 匹配不同类型的视频文件
+                # Match different types of video files
                 front_match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-front\.mp4", filename)
                 left_match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-left\.mp4", filename)
                 right_match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-right\.mp4", filename)
@@ -134,7 +134,7 @@ class S3VideoManager:
                     video_info["timestamp"] = "unknown"
                     videos["other"].append(video_info)
         
-        # 按时间戳排序
+        # Sort by timestamp
         for video_type in videos:
             videos[video_type].sort(key=lambda x: x["timestamp"])
         

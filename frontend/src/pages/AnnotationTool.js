@@ -30,9 +30,9 @@ function AnnotationTool() {
   const [dataSource, setDataSource] = useState(null); // 'local' or 's3'
   const [localFiles, setLocalFiles] = useState([]);
   const [currentLocalFileIndex, setCurrentLocalFileIndex] = useState(0);
-  const [currentLocalFilePath, setCurrentLocalFilePath] = useState(''); // 添加本地文件路径状态
-  const [currentLocalOrgId, setCurrentLocalOrgId] = useState(''); // 添加本地文件org_id状态
-  const [currentLocalKeyId, setCurrentLocalKeyId] = useState(''); // 添加本地文件key_id状态
+  const [currentLocalFilePath, setCurrentLocalFilePath] = useState(''); // Add local file path state
+  const [currentLocalOrgId, setCurrentLocalOrgId] = useState(''); // Add local file org_id state
+  const [currentLocalKeyId, setCurrentLocalKeyId] = useState(''); // Add local file key_id state
   const mapRef = useRef();
 
   const API_BASE = 'http://localhost:8000';
@@ -127,7 +127,7 @@ function AnnotationTool() {
     }
   };
   const handleNext = () => {
-    // 如果在预览模式，先退出预览
+    // If in preview mode, exit preview first
     if (isPreviewMode) {
       handleExitPreview();
     }
@@ -144,23 +144,23 @@ function AnnotationTool() {
     if (gpsPoints.length > 0 && mapRef.current) {
       const bounds = gpsPoints.map(p => [p.lat, p.lon]);
       console.log("MapRef object:", mapRef.current);
-      mapRef.current.fitBounds(bounds);  // ⬅️ 这里是否出错
+      mapRef.current.fitBounds(bounds);  // ⬅️ Check if there's an error here
     }
   }, [gpsPoints]);
 
-  // Marker 点击事件
+  // Marker click event
   const handleMarkerClick = (point) => {
     if (selectedPoints.length < 2) {
-      // 避免重复选同一个点
+      // Avoid selecting the same point repeatedly
       if (!selectedPoints.find(p => p.timestamp === point.timestamp)) {
         setSelectedPoints([...selectedPoints, point]);
       }
     } else {
-      setSelectedPoints([point]); // 超过2个则重置
+      setSelectedPoints([point]); // Reset if more than 2 points
     }
   };
 
-  // 预览视频
+  // Preview video
   const handlePreviewVideo = async () => {
     if (selectedPoints.length !== 2) return;
     const [p1, p2] = selectedPoints;
@@ -171,7 +171,7 @@ function AnnotationTool() {
     try {
       let res;
       if (dataSource === 'local') {
-        // 本地文件预览
+        // Local file preview
         res = await axios.post(`${API_BASE}/api/local/clip`, {
           file_path: currentLocalFilePath,
           start_ts,
@@ -179,7 +179,7 @@ function AnnotationTool() {
           preview_mode: true
         });
       } else {
-        // S3文件预览
+        // S3 file preview
         res = await axios.post(`${API_BASE}/api/video/clip`, {
           org_id: selectedOrgId,
           key_id: selectedKeyId,
@@ -201,14 +201,14 @@ function AnnotationTool() {
     }
   };
 
-  // 保存视频
+  // Save video
   const handleSaveVideo = async () => {
     if (!previewData) return;
     setClipResult('Saving video...');
     try {
       let res;
       if (dataSource === 'local') {
-        // 本地文件保存
+        // Local file save
         res = await axios.post(`${API_BASE}/api/local/clip`, {
           file_path: currentLocalFilePath,
           start_ts: Math.min(selectedPoints[0].timestamp, selectedPoints[1].timestamp),
@@ -216,7 +216,7 @@ function AnnotationTool() {
           preview_mode: false
         });
       } else {
-        // S3文件保存
+        // S3 file save
         res = await axios.post(`${API_BASE}/api/video/clip`, {
           org_id: selectedOrgId,
           key_id: selectedKeyId,
@@ -238,7 +238,7 @@ function AnnotationTool() {
     }
   };
 
-  // 退出预览模式
+  // Exit preview mode
   const handleExitPreview = () => {
     setIsPreviewMode(false);
     setPreviewData(null);

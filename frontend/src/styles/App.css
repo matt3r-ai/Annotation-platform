@@ -1,4 +1,4 @@
-/* 导入Google Fonts */
+/* Import Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 .App {
@@ -12,7 +12,7 @@
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-/* 背景网络效果 */
+/* Background network effect */
 .App::before {
   content: '';
   position: absolute;
@@ -259,7 +259,7 @@
   font-family: 'Inter', sans-serif;
 }
 
-/* 按钮样式改进 */
+/* Button style improvements */
 button {
   padding: 6px 12px;
   border: none;
@@ -291,7 +291,7 @@ button:disabled {
   box-shadow: none;
 }
 
-/* 选中点的样式 */
+/* Selected points style */
 .selected-points-container {
   background: rgba(26, 26, 46, 0.7);
   padding: 10px;
@@ -317,7 +317,7 @@ button:disabled {
   font-family: 'JetBrains Mono', 'Inter', monospace;
 }
 
-/* 视频剪辑按钮 */
+/* Video clip button */
 .clip-video-button {
   background: linear-gradient(135deg, #00ff96 0%, #00d4ff 100%) !important;
   color: #000000 !important;
@@ -343,7 +343,7 @@ button:disabled {
   color: #666666 !important;
 }
 
-/* 滚动条样式 */
+/* Scrollbar style */
 ::-webkit-scrollbar {
   width: 5px;
 }
@@ -362,7 +362,7 @@ button:disabled {
   background: linear-gradient(135deg, #00ffaa 0%, #00e6ff 100%);
 }
 
-/* 视频预览容器样式 */
+/* Video preview container style */
 .video-preview-container {
   display: flex;
   flex-direction: column;
@@ -409,7 +409,7 @@ button:disabled {
   justify-content: center;
 }
 
-/* 数据源选择页面样式 */
+/* Data source selection page style */
 .data-source-selection {
   display: flex;
   flex-direction: column;

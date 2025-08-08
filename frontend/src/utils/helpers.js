@@ -1,10 +1,10 @@
 import { FILE_TYPES, UI_CONFIG } from './constants';
 
 /**
- * 验证文件类型
- * @param {File} file - 文件对象
- * @param {string} type - 文件类型 ('video', 'image', 'audio', 'parquet')
- * @returns {boolean} - 是否为有效文件类型
+ * Validate file type
+ * @param {File} file - File object
+ * @param {string} type - File type ('video', 'image', 'audio', 'parquet')
+ * @returns {boolean} - Whether it's a valid file type
  */
 export const validateFileType = (file, type) => {
   const fileName = file.name.toLowerCase();
@@ -24,19 +24,19 @@ export const validateFileType = (file, type) => {
 };
 
 /**
- * 验证文件大小
- * @param {File} file - 文件对象
- * @param {number} maxSize - 最大文件大小（字节）
- * @returns {boolean} - 文件大小是否有效
+ * Validate file size
+ * @param {File} file - File object
+ * @param {number} maxSize - Maximum file size (bytes)
+ * @returns {boolean} - Whether file size is valid
  */
 export const validateFileSize = (file, maxSize = UI_CONFIG.UPLOAD_MAX_SIZE) => {
   return file.size <= maxSize;
 };
 
 /**
- * 格式化文件大小
- * @param {number} bytes - 字节数
- * @returns {string} - 格式化后的文件大小
+ * Format file size
+ * @param {number} bytes - Number of bytes
+ * @returns {string} - Formatted file size
  */
 export const formatFileSize = (bytes) => {
   if (bytes === 0) return '0 Bytes';
@@ -49,9 +49,9 @@ export const formatFileSize = (bytes) => {
 };
 
 /**
- * 格式化时间戳
- * @param {number} timestamp - 时间戳
- * @returns {string} - 格式化后的时间
+ * Format timestamp
+ * @param {number} timestamp - Timestamp
+ * @returns {string} - Formatted time
  */
 export const formatTimestamp = (timestamp) => {
   const date = new Date(timestamp);
@@ -59,9 +59,9 @@ export const formatTimestamp = (timestamp) => {
 };
 
 /**
- * 从文件路径中提取org_id和key_id
- * @param {string} filePath - 文件路径
- * @returns {Object} - 包含org_id和key_id的对象
+ * Extract org_id and key_id from file path
+ * @param {string} filePath - File path
+ * @returns {Object} - Object containing org_id and key_id
  */
 export const extractIdsFromPath = (filePath) => {
   const pathParts = filePath.split('/');
@@ -75,13 +75,13 @@ export const extractIdsFromPath = (filePath) => {
 };
 
 /**
- * 计算两点之间的距离（米）
- * @param {Object} point1 - 第一个点 {lat, lon}
- * @param {Object} point2 - 第二个点 {lat, lon}
- * @returns {number} - 距离（米）
+ * Calculate distance between two points (meters)
+ * @param {Object} point1 - First point {lat, lon}
+ * @param {Object} point2 - Second point {lat, lon}
+ * @returns {number} - Distance (meters)
  */
 export const calculateDistance = (point1, point2) => {
-  const R = 6371e3; // 地球半径（米）
+  const R = 6371e3; // Earth radius (meters)
   const φ1 = point1.lat * Math.PI / 180;
   const φ2 = point2.lat * Math.PI / 180;
   const Δφ = (point2.lat - point1.lat) * Math.PI / 180;
@@ -96,10 +96,10 @@ export const calculateDistance = (point1, point2) => {
 };
 
 /**
- * 防抖函数
- * @param {Function} func - 要防抖的函数
- * @param {number} wait - 等待时间（毫秒）
- * @returns {Function} - 防抖后的函数
+ * Debounce function
+ * @param {Function} func - Function to debounce
+ * @param {number} wait - Wait time (milliseconds)
+ * @returns {Function} - Debounced function
  */
 export const debounce = (func, wait) => {
   let timeout;
@@ -114,10 +114,10 @@ export const debounce = (func, wait) => {
 };
 
 /**
- * 节流函数
- * @param {Function} func - 要节流的函数
- * @param {number} limit - 限制时间（毫秒）
- * @returns {Function} - 节流后的函数
+ * Throttle function
+ * @param {Function} func - Function to throttle
+ * @param {number} limit - Limit time (milliseconds)
+ * @returns {Function} - Throttled function
  */
 export const throttle = (func, limit) => {
   let inThrottle;
@@ -133,17 +133,17 @@ export const throttle = (func, limit) => {
 };
 
 /**
- * 生成唯一ID
- * @returns {string} - 唯一ID
+ * Generate unique ID
+ * @returns {string} - Unique ID
  */
 export const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 };
 
 /**
- * 深拷贝对象
- * @param {Object} obj - 要拷贝的对象
- * @returns {Object} - 拷贝后的对象
+ * Deep clone object
+ * @param {Object} obj - Object to clone
+ * @returns {Object} - Cloned object
  */
 export const deepClone = (obj) => {
   if (obj === null || typeof obj !== 'object') return obj;

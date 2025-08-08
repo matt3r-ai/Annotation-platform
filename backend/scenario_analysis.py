@@ -43,7 +43,9 @@ def get_db_connection():
 # Data models
 class ScenarioQuery(BaseModel):
     event_types: List[str]
-    days_back: int = 7
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    days_back: int = 7  # Keep for backward compatibility
     limit: int = 50
 
 class Segment(BaseModel):
@@ -62,6 +64,9 @@ class ProcessParams(BaseModel):
     generate_videos: bool = True
     extract_data: bool = True
     create_visualizations: bool = True
+
+class AnnotationsData(BaseModel):
+    annotations: dict  # {scenario_id: [annotation_objects]}
 
 # Mock data for development (fallback)
 mock_scenarios = [
@@ -105,14 +110,14 @@ def get_s3_video_url(scenario_id: int, video_key: str = None) -> str:
         print(f"Attempting to get S3 URL for scenario {scenario_id}")
         s3_client = boto3.client('s3')
         
-        # 如果没有提供video_key，使用默认路径
+        # If video_key is not provided, use default path
         if not video_key:
             video_key = f"scenarios/scenario_{scenario_id}.mp4"
         
         print(f"Using S3 bucket: {S3_BUCKET}")
         print(f"Using video key: {video_key}")
         
-        # 首先检查文件是否存在
+        # First check if file exists
         try:
             s3_client.head_object(Bucket=S3_BUCKET, Key=video_key)
             print(f"✅ Video file exists in S3: {video_key}")
@@ -121,7 +126,7 @@ def get_s3_video_url(scenario_id: int, video_key: str = None) -> str:
             print(f"Error: {e}")
             return None
         
-        # 生成预签名URL，有效期1小时
+        # Generate presigned URL, valid for 1 hour
         url = s3_client.generate_presigned_url(
             'get_object',
             Params={
@@ -139,19 +144,19 @@ def get_s3_video_url(scenario_id: int, video_key: str = None) -> str:
         return None
 
 def download_video_from_s3(scenario_id: int, video_key: str) -> str:
-    """从S3下载视频到本地"""
+    """Download video from S3 to local"""
     try:
         ensure_download_dir()
         
-        # 创建本地文件路径
+        # Create local file path
         local_filename = f"scenario_{scenario_id}.mp4"
         local_path = os.path.join(DOWNLOAD_DIR, local_filename)
         
-        # 如果文件已存在，直接返回路径
+        # If file already exists, return path directly
         if os.path.exists(local_path):
             return local_path
         
-        # 从S3下载视频
+        # Download video from S3
         s3_client = boto3.client('s3')
         s3_client.download_file(S3_BUCKET, video_key, local_path)
         
@@ -164,7 +169,7 @@ def download_video_from_s3(scenario_id: int, video_key: str) -> str:
 
 @router.post("/fetch")
 async def fetch_scenarios(query: ScenarioQuery):
-    """获取场景数据"""
+    """Get scenario data"""
     try:
         conn = get_db_connection()
         if not conn:
@@ -222,20 +227,35 @@ async def fetch_scenarios(query: ScenarioQuery):
             elif event_type == "road-condition":
                 event_conditions.append("jsonb_path_exists(data_links, '$.coreml.* ? (@.event == \"road-condition\")')")
         
-        # 构建SQL查询
+        # Build SQL query
+        # Handle date range
+        date_condition = ""
+        if query.start_date and query.end_date:
+            # Use specified date range
+            date_condition = f"AND created_at >= '{query.start_date}' AND created_at <= '{query.end_date} 23:59:59'"
+        elif query.start_date:
+            # Only start date
+            date_condition = f"AND created_at >= '{query.start_date}'"
+        elif query.end_date:
+            # Only end date
+            date_condition = f"AND created_at <= '{query.end_date} 23:59:59'"
+        else:
+            # Use default days_back (backward compatibility)
+            date_condition = f"AND created_at >= NOW() - INTERVAL '{query.days_back} days'"
+        
         if not event_conditions:
-            # 如果没有选择事件类型，只检查dmp_status = 'SUCCESS'
+            # If no event types selected, only check dmp_status = 'SUCCESS'
             sql_query = f"""
             SELECT id, org_id, key_id, vin, created_at, data_links, dmp_status, start_time, end_time, data_source_status, updated_at, osm_tags
             FROM public.dmp
             WHERE dmp_status = 'SUCCESS'
               AND jsonb_path_exists(data_links, '$.trip.console_trip ? (@ != null && @ != "null")')
-              AND created_at >= NOW() - INTERVAL '{query.days_back} days'
+              {date_condition}
             ORDER BY id DESC
             LIMIT {query.limit};
             """
         else:
-            # 如果选择了事件类型，使用AND条件确保场景同时包含所有选中的event types
+            # If event types are selected, use AND condition to ensure scenario contains all selected event types
             event_condition = " AND ".join(event_conditions)
             sql_query = f"""
             SELECT id, org_id, key_id, vin, created_at, data_links, dmp_status, start_time, end_time, data_source_status, updated_at, osm_tags
@@ -243,7 +263,7 @@ async def fetch_scenarios(query: ScenarioQuery):
             WHERE dmp_status = 'SUCCESS'
               AND jsonb_path_exists(data_links, '$.trip.console_trip ? (@ != null && @ != "null")')
               AND ({event_condition})
-              AND created_at >= NOW() - INTERVAL '{query.days_back} days'
+              {date_condition}
             ORDER BY id DESC
             LIMIT {query.limit};
             """
@@ -261,7 +281,7 @@ async def fetch_scenarios(query: ScenarioQuery):
             if data_links and isinstance(data_links, dict):
                 coreml_events = data_links.get("coreml", {})
                 if isinstance(coreml_events, dict):
-                    # 处理对象格式的coreml数据
+                    # Handle object format coreml data
                     for event_id, event_data in coreml_events.items():
                         if isinstance(event_data, dict) and event_data.get("event") in [
                             "fcw", "harsh-brake", "lane-departure", "left-turn", "right-turn", 
@@ -272,7 +292,7 @@ async def fetch_scenarios(query: ScenarioQuery):
                             event_type = event_data["event"]
                             break
                 elif isinstance(coreml_events, list):
-                    # 兼容数组格式
+                    # Compatible with array format
                     for event in coreml_events:
                         if isinstance(event, dict) and event.get("event") in [
                             "fcw", "harsh-brake", "lane-departure", "left-turn", "right-turn", 
@@ -289,17 +309,17 @@ async def fetch_scenarios(query: ScenarioQuery):
                 print(f"Data links for scenario {scenario_id}:")
                 print(f"  Keys: {list(data_links.keys())}")
                 
-                # 检查是否有直接的视频路径
+                # Check if there is a direct video path
                 if 'video' in data_links and data_links['video']:
                     video_data = data_links['video']
                     print(f"  Found video data: {video_data}")
                     
                     if isinstance(video_data, dict) and 'front' in video_data:
-                        # 直接使用front视频的完整S3 URL
+                        # Directly use front video complete S3 URL
                         front_video_url = video_data['front']
                         print(f"  Front video URL: {front_video_url}")
                         
-                        # 从完整URL中提取相对路径
+                        # Extract relative path from complete URL
                         if front_video_url.startswith('s3://'):
                             parts = front_video_url.split('/')
                             if len(parts) >= 4:  # s3://bucket-name/path...
@@ -1045,6 +1065,164 @@ async def get_activity_timeline(scenario_id: int):
             "scenario_id": scenario_id
         } 
 
+@router.post("/imu/extract")
+async def extract_imu_data(request: dict):
+    """提取IMU数据（gyro和accel）"""
+    try:
+        scenario_id = request.get('scenario_id')
+        if not scenario_id:
+            return {"status": "error", "message": "Missing scenario_id"}
+        
+        conn = get_db_connection()
+        if not conn:
+            return {"status": "error", "message": "Database connection failed"}
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT data_links FROM public.dmp WHERE id = %s", (scenario_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return {"status": "error", "message": "Scenario not found"}
+        
+        data_links = row[0]
+        print(f"📊 Extracting IMU data for scenario {scenario_id}")
+        print(f"📊 Data links keys: {list(data_links.keys()) if data_links else 'None'}")
+        
+        imu_data = {"gyro": [], "accel": []}
+        
+        if data_links and isinstance(data_links, dict):
+            # 提取IMU数据
+            if 'imu' in data_links and data_links['imu']:
+                imu_links = data_links['imu']
+                print(f"📊 IMU links: {imu_links}")
+                
+                # 处理gyro数据
+                if 'gyro' in imu_links and imu_links['gyro']:
+                    try:
+                        gyro_url = imu_links['gyro']
+                        print(f"📊 Loading gyro data from: {gyro_url}")
+                        
+                        # 这里需要根据实际的IMU数据格式来解析
+                        # 假设是parquet格式，包含timestamp, x, y, z列
+                        # 实际实现需要根据您的数据格式调整
+                        gyro_data = load_imu_data_from_s3(gyro_url)
+                        imu_data["gyro"] = gyro_data
+                        print(f"✅ Loaded {len(gyro_data)} gyro data points")
+                    except Exception as e:
+                        print(f"❌ Error loading gyro data: {e}")
+                
+                # 处理accel数据
+                if 'accel' in imu_links and imu_links['accel']:
+                    try:
+                        accel_url = imu_links['accel']
+                        print(f"📊 Loading accel data from: {accel_url}")
+                        
+                        accel_data = load_imu_data_from_s3(accel_url)
+                        imu_data["accel"] = accel_data
+                        print(f"✅ Loaded {len(accel_data)} accel data points")
+                    except Exception as e:
+                        print(f"❌ Error loading accel data: {e}")
+        
+        cursor.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "imu_data": imu_data,
+            "scenario_id": scenario_id
+        }
+        
+    except Exception as e:
+        print(f"❌ Error extracting IMU data: {e}")
+        return {"status": "error", "message": str(e)}
+
+def load_imu_data_from_s3(s3_url):
+    """从S3加载IMU数据"""
+    try:
+        # 解析S3 URL
+        if s3_url.startswith('s3://'):
+            parts = s3_url.split('/')
+            bucket = parts[2]
+            key = '/'.join(parts[3:])
+        else:
+            return []
+        
+        print(f"📊 Loading IMU data from S3: bucket={bucket}, key={key}")
+        
+        # 使用boto3从S3读取parquet文件
+        import boto3
+        import pandas as pd
+        from io import BytesIO
+        
+        s3_client = boto3.client('s3')
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        
+        # 读取parquet数据
+        df = pd.read_parquet(BytesIO(response['Body'].read()))
+        
+        print(f"📊 IMU data shape: {df.shape}")
+        print(f"📊 IMU data columns: {list(df.columns)}")
+        print(f"📊 First few rows:")
+        print(df.head())
+        
+        # 查找可能的列名
+        timestamp_col = None
+        x_col = None
+        y_col = None
+        z_col = None
+        
+        # 查找时间戳列
+        for col in df.columns:
+            col_lower = col.lower()
+            if any(keyword in col_lower for keyword in ['timestamp', 'time', 'ts']):
+                timestamp_col = col
+                break
+        
+        # 查找x, y, z列 - 支持多种命名格式
+        for col in df.columns:
+            col_lower = col.lower()
+            # 标准格式
+            if col_lower in ['x', 'gyro_x', 'accel_x']:
+                x_col = col
+            elif col_lower in ['y', 'gyro_y', 'accel_y']:
+                y_col = col
+            elif col_lower in ['z', 'gyro_z', 'accel_z']:
+                z_col = col
+            # 车辆坐标系格式 (lr=left-right, bf=back-front, vert=vertical)
+            elif col_lower in ['lr_w', 'lr_acc', 'lr']:
+                x_col = col
+            elif col_lower in ['bf_w', 'bf_acc', 'bf']:
+                y_col = col
+            elif col_lower in ['vert_w', 'vert_acc', 'vert']:
+                z_col = col
+        
+        print(f"📊 Found columns: timestamp={timestamp_col}, x={x_col}, y={y_col}, z={z_col}")
+        
+        # 转换为前端需要的格式
+        data_points = []
+        for _, row in df.iterrows():
+            data_point = {
+                "timestamp": float(row.get(timestamp_col, 0)) if timestamp_col else 0,
+                "x": float(row.get(x_col, 0)) if x_col else 0,
+                "y": float(row.get(y_col, 0)) if y_col else 0,
+                "z": float(row.get(z_col, 0)) if z_col else 0
+            }
+            data_points.append(data_point)
+        
+        print(f"📊 Converted {len(data_points)} data points")
+        if data_points:
+            print(f"📊 Sample data point: {data_points[0]}")
+        
+        return data_points
+        
+    except Exception as e:
+        print(f"❌ Error loading IMU data from S3: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+
 @router.post("/gps/extract")
 async def extract_gps_data(request: dict):
     """从 console_trip 中提取 GPS 数据"""
@@ -1222,6 +1400,67 @@ async def extract_gps_data(request: dict):
             "status": "error",
             "message": str(e)
         }
+
+@router.post("/annotations/write-back")
+async def write_annotations_to_db(annotations_data: AnnotationsData):
+    """将标注数据写回到dmp table"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        cursor = conn.cursor()
+        
+        # 首先检查annotations列是否存在，如果不存在则添加
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'dmp' AND column_name = 'annotations'
+        """)
+        
+        if not cursor.fetchone():
+            print("Adding annotations column to dmp table...")
+            cursor.execute("""
+                ALTER TABLE dmp 
+                ADD COLUMN annotations JSONB
+            """)
+            conn.commit()
+            print("✅ Annotations column added successfully")
+        
+        # 更新每个scenario的annotations
+        updated_count = 0
+        for scenario_id, annotations_list in annotations_data.annotations.items():
+            if annotations_list:  # 只更新有标注的scenario
+                annotations_json = json.dumps(annotations_list)
+                
+                cursor.execute("""
+                    UPDATE dmp 
+                    SET annotations = %s 
+                    WHERE id = %s
+                """, (annotations_json, int(scenario_id)))
+                
+                if cursor.rowcount > 0:
+                    updated_count += 1
+                    print(f"✅ Updated scenario {scenario_id} with {len(annotations_list)} annotations")
+                else:
+                    print(f"⚠️  Scenario {scenario_id} not found in dmp table")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully updated {updated_count} scenarios with annotations",
+            "updated_count": updated_count
+        }
+        
+    except Exception as e:
+        print(f"❌ Error writing annotations to database: {e}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Database update failed: {str(e)}")
 
 @router.post("/video/clip")
 async def clip_video(request: dict):

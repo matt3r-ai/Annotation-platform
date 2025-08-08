@@ -1,4 +1,4 @@
-// API相关常量
+// API related constants
 export const API_ENDPOINTS = {
   GPS: {
     LOAD: '/api/gps/load',
@@ -20,13 +20,13 @@ export const API_ENDPOINTS = {
   },
 };
 
-// 数据源类型
+// Data source types
 export const DATA_SOURCES = {
   LOCAL: 'local',
   S3: 's3',
 };
 
-// 工具类型
+// Tool types
 export const TOOL_TYPES = {
   GPS_VIDEO: 'gps-video',
   OBJECT_DETECTION: 'object-detection',
@@ -34,7 +34,7 @@ export const TOOL_TYPES = {
   LANE_DETECTION: 'lane-detection',
 };
 
-// 文件类型
+// File types
 export const FILE_TYPES = {
   PARQUET: '.parquet',
   VIDEO: ['.mp4', '.avi', '.mov', '.mkv'],
@@ -42,26 +42,26 @@ export const FILE_TYPES = {
   AUDIO: ['.wav', '.mp3', '.aac', '.flac'],
 };
 
-// 地图相关常量
+// Map related constants
 export const MAP_CONFIG = {
-  DEFAULT_CENTER: [39.9042, 116.4074], // 北京
+  DEFAULT_CENTER: [39.9042, 116.4074], // Beijing
   DEFAULT_ZOOM: 13,
   TILE_URL: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
 };
 
-// UI相关常量
+// UI related constants
 export const UI_CONFIG = {
   MAX_SELECTED_POINTS: 2,
   PREVIEW_TIMEOUT: 30000,
   UPLOAD_MAX_SIZE: 100 * 1024 * 1024, // 100MB
 };
 
-// 错误消息
+// Error messages
 export const ERROR_MESSAGES = {
-  NETWORK_ERROR: '网络连接错误，请检查网络连接',
-  UPLOAD_ERROR: '文件上传失败，请重试',
-  LOAD_ERROR: '数据加载失败，请重试',
-  SAVE_ERROR: '保存失败，请重试',
-  INVALID_FILE: '文件格式不支持',
-  FILE_TOO_LARGE: '文件大小超过限制',
+  NETWORK_ERROR: 'Network connection error, please check your connection',
+  UPLOAD_ERROR: 'File upload failed, please try again',
+  LOAD_ERROR: 'Data loading failed, please try again',
+  SAVE_ERROR: 'Save failed, please try again',
+  INVALID_FILE: 'File format not supported',
+  FILE_TOO_LARGE: 'File size exceeds limit',
 }; 
