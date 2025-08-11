@@ -21,10 +21,6 @@ Thumbs.db
 # Video and frame cache
 saved_video/
 
-
-# Docker
-**/Dockerfile
-
 # Logs
 *.log
 

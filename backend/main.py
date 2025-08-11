@@ -17,7 +17,7 @@ import uuid
 from scenario_analysis import router as scenario_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "../saved_video")
+STATIC_DIR = os.path.join(BASE_DIR, "saved_video")
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
