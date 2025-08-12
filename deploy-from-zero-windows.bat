@@ -1,67 +1,67 @@
 @echo off
 chcp 65001 >nul
-echo 🚀 MATT3R Annotation Platform - Windows从0开始部署
+echo 🚀 MATT3R Annotation Platform - Windows Deployment from Zero
 echo ====================================================
 echo.
 
-echo 📋 系统信息:
-echo   操作系统: Windows 11
-echo   架构: x64
-echo   当前目录: %CD%
+echo 📋 System Information:
+echo   Operating System: Windows 11
+echo   Architecture: x64
+echo   Current Directory: %CD%
 echo.
 
-echo 🔍 检查Docker环境...
+echo 🔍 Checking Docker Environment...
 docker --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ❌ Docker未安装
+    echo ❌ Docker is not installed
     echo.
-    echo 📥 请按以下步骤安装Docker Desktop:
-    echo   1. 访问: https://www.docker.com/products/docker-desktop/
-    echo   2. 下载 "Download for Windows - AMD64" 版本
-    echo   3. 运行安装程序
-    echo   4. 安装完成后重启电脑
-    echo   5. 重启后确保Docker Desktop正在运行
+    echo 📥 Please follow these steps to install Docker Desktop:
+    echo   1. Visit: https://www.docker.com/products/docker-desktop/
+    echo   2. Download "Download for Windows - AMD64" version
+    echo   3. Run the installer
+    echo   4. Restart computer after installation
+    echo   5. After restart, ensure Docker Desktop is running
     echo.
-    echo 安装完成后，请重新运行此脚本
+    echo After installation, please run this script again
     pause
     exit /b 1
 )
 
-echo ✅ Docker已安装
-for /f "tokens=*" %%i in ('docker --version') do echo   版本: %%i
+echo ✅ Docker is installed
+for /f "tokens=*" %%i in ('docker --version') do echo   Version: %%i
 
 echo.
-echo 🔧 检查Docker Compose...
+echo 🔧 Checking Docker Compose...
 docker-compose --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ❌ Docker Compose未安装
-    echo   请确保Docker Desktop已正确安装
+    echo ❌ Docker Compose is not installed
+    echo   Please ensure Docker Desktop is properly installed
     pause
     exit /b 1
 )
 
-echo ✅ Docker Compose已安装
-for /f "tokens=*" %%i in ('docker-compose --version') do echo   版本: %%i
+echo ✅ Docker Compose is installed
+for /f "tokens=*" %%i in ('docker-compose --version') do echo   Version: %%i
 
 echo.
-echo 📊 检查Docker状态...
+echo 📊 Checking Docker Status...
 docker info >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ❌ Docker服务未运行
-    echo   请启动Docker Desktop
-    echo   检查任务栏是否有Docker图标，确保它是绿色的
+    echo ❌ Docker service is not running
+    echo   Please start Docker Desktop
+    echo   Check if there's a Docker icon in the taskbar, ensure it's green
     pause
     exit /b 1
 )
 
-echo ✅ Docker服务运行正常
+echo ✅ Docker service is running normally
 
 echo.
-echo 📁 检查项目文件完整性...
+echo 📁 Checking Project File Integrity...
 if exist docker-compose.yml (
     echo ✅ docker-compose.yml
 ) else (
-    echo ❌ docker-compose.yml (缺失)
+    echo ❌ docker-compose.yml (missing)
     pause
     exit /b 1
 )
@@ -69,7 +69,7 @@ if exist docker-compose.yml (
 if exist backend\Dockerfile (
     echo ✅ backend\Dockerfile
 ) else (
-    echo ❌ backend\Dockerfile (缺失)
+    echo ❌ backend\Dockerfile (missing)
     pause
     exit /b 1
 )
@@ -77,7 +77,7 @@ if exist backend\Dockerfile (
 if exist frontend\Dockerfile (
     echo ✅ frontend\Dockerfile
 ) else (
-    echo ❌ frontend\Dockerfile (缺失)
+    echo ❌ frontend\Dockerfile (missing)
     pause
     exit /b 1
 )
@@ -85,7 +85,7 @@ if exist frontend\Dockerfile (
 if exist backend\requirements.txt (
     echo ✅ backend\requirements.txt
 ) else (
-    echo ❌ backend\requirements.txt (缺失)
+    echo ❌ backend\requirements.txt (missing)
     pause
     exit /b 1
 )
@@ -93,7 +93,7 @@ if exist backend\requirements.txt (
 if exist frontend\package.json (
     echo ✅ frontend\package.json
 ) else (
-    echo ❌ frontend\package.json (缺失)
+    echo ❌ frontend\package.json (missing)
     pause
     exit /b 1
 )
@@ -101,127 +101,127 @@ if exist frontend\package.json (
 if exist env.example (
     echo ✅ env.example
 ) else (
-    echo ❌ env.example (缺失)
+    echo ❌ env.example (missing)
     pause
     exit /b 1
 )
 
-echo ✅ 所有必需文件都存在
+echo ✅ All required files exist
 
 echo.
-echo 🌐 检查端口占用...
+echo 🌐 Checking Port Occupancy...
 netstat -ano | findstr :80 >nul
 if %errorlevel% equ 0 (
-    echo ⚠️  端口80被占用
-    echo   请检查是否有其他Web服务在运行
-    echo   可以停止占用端口的进程或修改docker-compose.yml中的端口映射
+    echo ⚠️   Port 80 is occupied
+    echo   Please check if there are other web services running
+    echo   You can stop the process occupying the port or modify the port mapping in docker-compose.yml
 ) else (
-    echo ✅ 端口80可用
+    echo ✅ Port 80 is available
 )
 
 netstat -ano | findstr :8000 >nul
 if %errorlevel% equ 0 (
-    echo ⚠️  端口8000被占用
-    echo   请检查是否有其他API服务在运行
-    echo   可以停止占用端口的进程或修改docker-compose.yml中的端口映射
+    echo ⚠️   Port 8000 is occupied
+    echo   Please check if there are other API services running
+    echo   You can stop the process occupying the port or modify the port mapping in docker-compose.yml
 ) else (
-    echo ✅ 端口8000可用
+    echo ✅ Port 8000 is available
 )
 
 echo.
-echo ⚙️  配置环境变量...
+echo ⚙️   Configuring Environment Variables...
 if not exist .env (
-    echo 📝 创建.env文件...
+    echo 📝 Creating .env file...
     copy env.example .env >nul
     
-    echo ⚠️  请配置以下AWS凭证信息:
+    echo ⚠️   Please configure the following AWS credentials:
     echo   - AWS_ACCESS_KEY_ID
     echo   - AWS_SECRET_ACCESS_KEY
     echo   - AWS_DEFAULT_REGION
     echo   - AWS_S3_BUCKET
     echo.
-    echo 按Enter键编辑.env文件...
+    echo Press Enter to edit the .env file...
     pause
     
     notepad .env
     
     echo.
-    echo 配置完成后，请确认.env文件已保存
-    echo 按Enter键继续...
+    echo After configuration, please confirm the .env file is saved
+    echo Press Enter to continue...
     pause
 ) else (
-    echo ✅ .env文件已存在
+    echo ✅ .env file already exists
 )
 
 echo.
-echo 🔨 开始构建Docker镜像...
-echo 注意: 首次构建可能需要10-20分钟，请耐心等待
+echo 🔨 Starting Docker Image Build...
+echo Note: First build may take 10-20 minutes, please be patient
 echo.
 docker-compose build
 
 if %errorlevel% neq 0 (
-    echo ❌ 构建失败
-    echo 请检查错误信息并修复问题
+    echo ❌ Build failed
+    echo Please check the error message and fix the issue
     pause
     exit /b 1
 )
 
-echo ✅ 镜像构建成功
+echo ✅ Image build successful
 
 echo.
-echo 🚀 启动服务...
+echo 🚀 Starting Services...
 docker-compose up -d
 
 if %errorlevel% neq 0 (
-    echo ❌ 启动失败
-    echo 请检查错误信息并修复问题
+    echo ❌ Start failed
+    echo Please check the error message and fix the issue
     pause
     exit /b 1
 )
 
-echo ✅ 服务启动成功
+echo ✅ Services started successfully
 
 echo.
-echo ⏳ 等待服务启动...
+echo ⏳ Waiting for services to start...
 timeout /t 20 /nobreak >nul
 
 echo.
-echo 📊 检查服务状态...
+echo 📊 Checking Service Status...
 docker-compose ps
 
 echo.
-echo 🔍 验证服务健康状态...
-echo 检查后端健康状态...
+echo 🔍 Verifying Service Health Status...
+echo Checking backend health status...
 curl -f http://localhost:8000/api/health >nul 2>&1
 if %errorlevel% equ 0 (
-    echo ✅ 后端服务健康
+    echo ✅ Backend service healthy
 ) else (
-    echo ❌ 后端服务异常
+    echo ❌ Backend service abnormal
 )
 
-echo 检查前端服务状态...
+echo Checking frontend service status...
 curl -f http://localhost >nul 2>&1
 if %errorlevel% equ 0 (
-    echo ✅ 前端服务正常
+    echo ✅ Frontend service normal
 ) else (
-    echo ❌ 前端服务异常
+    echo ❌ Frontend service abnormal
 )
 
 echo.
-echo 🎉 部署完成！
+echo 🎉 Deployment complete!
 echo ====================================================
-echo 🌐 访问地址:
-echo   前端界面: http://localhost
-echo   后端API:  http://localhost:8000
-echo   健康检查: http://localhost:8000/api/health
+echo 🌐 Access Address:
+echo   Frontend Interface: http://localhost
+echo   Backend API:  http://localhost:8000
+echo   Health Check: http://localhost:8000/api/health
 echo.
-echo 🛠️  常用命令:
-echo   查看状态: docker-compose ps
-echo   查看日志: docker-compose logs -f
-echo   停止服务: docker-compose down
-echo   重启服务: docker-compose restart
+echo 🛠️   Common Commands:
+echo   View Status: docker-compose ps
+echo   View Logs: docker-compose logs -f
+echo   Stop Services: docker-compose down
+echo   Restart Services: docker-compose restart
 echo.
-echo 📖 更多信息请查看: README-Docker.md
+echo 📖 For more information, please refer to: README-Docker.md
 echo.
 
 pause

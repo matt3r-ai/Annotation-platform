@@ -1,102 +1,100 @@
 @echo off
 chcp 65001 >nul
-echo 🔍 AWS凭证检查工具
+echo 🔍 AWS Credentials Check Tool
 echo ====================
 echo.
 
-echo 📋 检查系统环境变量...
+echo 📋 Checking System Environment Variables...
 echo.
 echo AWS_ACCESS_KEY_ID: %AWS_ACCESS_KEY_ID%
 echo AWS_SECRET_ACCESS_KEY: %AWS_SECRET_ACCESS_KEY%
 echo AWS_DEFAULT_REGION: %AWS_DEFAULT_REGION%
 echo.
 
-echo 📁 检查AWS CLI配置文件...
+echo 📁 Checking AWS CLI Configuration Files...
 if exist "%USERPROFILE%\.aws\credentials" (
-    echo ✅ 找到AWS凭证文件: %USERPROFILE%\.aws\credentials
+    echo ✅ Found AWS credentials file: %USERPROFILE%\.aws\credentials
     echo.
-    echo 📝 凭证文件内容:
+    echo 📝 Credentials file content:
     echo ----------------------------------------
     type "%USERPROFILE%\.aws\credentials"
     echo ----------------------------------------
 ) else (
-    echo ❌ 未找到AWS凭证文件
+    echo ❌ AWS credentials file not found
 )
 echo.
 
 if exist "%USERPROFILE%\.aws\config" (
-    echo ✅ 找到AWS配置文件: %USERPROFILE%\.aws\config
+    echo ✅ Found AWS config file: %USERPROFILE%\.aws\config
     echo.
-    echo 📝 配置文件内容:
+    echo 📝 Config file content:
     echo ----------------------------------------
     type "%USERPROFILE%\.aws\config"
     echo ----------------------------------------
 ) else (
-    echo ❌ 未找到AWS配置文件
+    echo ❌ AWS config file not found
 )
 echo.
 
-echo 🔧 检查AWS CLI是否安装...
+echo 🔧 Checking if AWS CLI is installed...
 aws --version >nul 2>&1
 if %errorlevel% equ 0 (
-    echo ✅ AWS CLI已安装
+    echo ✅ AWS CLI is installed
     echo.
-    echo 📊 当前AWS配置:
+    echo 📊 Current AWS configuration:
     echo ----------------------------------------
     aws configure list
     echo ----------------------------------------
     echo.
-    echo 📋 所有配置文件:
+    echo 📋 All configuration profiles:
     echo ----------------------------------------
     aws configure list-profiles
     echo ----------------------------------------
 ) else (
-    echo ❌ AWS CLI未安装
+    echo ❌ AWS CLI is not installed
     echo.
-    echo 💡 建议安装AWS CLI来管理凭证:
-    echo   下载地址: https://aws.amazon.com/cli/
+    echo 💡 It's recommended to install AWS CLI to manage credentials:
+    echo   Download URL: https://aws.amazon.com/cli/
 )
 echo.
 
-echo 🌐 检查其他可能的凭证位置...
+echo 🌐 Checking other possible credential locations...
 echo.
-echo 检查PowerShell配置文件...
+echo Checking PowerShell profile...
 if exist "%USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1" (
-    echo ✅ 找到PowerShell配置文件
-    echo 检查是否包含AWS相关配置...
+    echo ✅ Found PowerShell profile
+    echo Checking if it contains AWS-related configuration...
     findstr /i "aws" "%USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1" >nul 2>&1
     if %errorlevel% equ 0 (
-        echo 发现AWS相关配置:
+        echo Found AWS-related configuration:
         findstr /i "aws" "%USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
     ) else (
-        echo 未发现AWS相关配置
+        echo No AWS-related configuration found
     )
 ) else (
-    echo ❌ 未找到PowerShell配置文件
+    echo ❌ PowerShell profile not found
 )
 echo.
 
-echo 📝 总结建议:
+echo 📝 Summary Recommendations:
 echo ====================
 echo.
 if exist "%USERPROFILE%\.aws\credentials" (
-    echo ✅ 建议使用AWS CLI配置文件中的凭证
-    echo   位置: %USERPROFILE%\.aws\credentials
+    echo ✅ It's recommended to use credentials from AWS CLI configuration file
+    echo   Location: %USERPROFILE%\.aws\credentials
     echo.
-    echo 💡 复制凭证到.env文件:
-    echo   1. 打开 %USERPROFILE%\.aws\credentials
-    echo   2. 复制access_key_id和secret_access_key
-    echo   3. 粘贴到项目根目录的.env文件中
+    echo 💡 Copy credentials to .env file:
+    echo   1. Open %USERPROFILE%\.aws\credentials
+    echo   2. Copy access_key_id and secret_access_key
+    echo   3. Paste into .env file in project root directory
 ) else (
-    echo ❌ 未找到AWS凭证
+    echo ❌ No AWS credentials found
     echo.
-    echo 💡 获取AWS凭证的步骤:
-    echo   1. 登录AWS控制台: https://console.aws.amazon.com/
-    echo   2. 进入IAM服务
-    echo   3. 选择用户或创建新用户
-    echo   4. 创建访问密钥
-    echo   5. 下载或复制凭证信息
+    echo 💡 Steps to obtain AWS credentials:
+    echo   1. Login to AWS Console: https://console.aws.amazon.com/
+    echo   2. Go to IAM service
+    echo   3. Select user or create new user
+    echo   4. Create access key
+    echo   5. Download or copy credential information
 )
 echo.
-echo 按任意键退出...
-pause >nul
