@@ -24,7 +24,7 @@ echo Waiting for services to start...
 timeout /t 10 /nobreak >nul
 
 echo Services started!
-echo Frontend: http://localhost:3000
+echo Frontend: http://localhost
 echo Backend: http://localhost:8000
 
 pause 
