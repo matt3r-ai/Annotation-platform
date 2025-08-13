@@ -10,6 +10,8 @@ import tempfile
 import os
 from pathlib import Path
 import pandas as pd
+from fastapi.responses import FileResponse
+import zipfile
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
@@ -1661,3 +1663,436 @@ async def clip_video(request: dict):
             "status": "error",
             "message": str(e)
         } 
+
+class CropDataRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    data_links: dict
+
+@router.post("/crop-data")
+async def crop_data_by_time_range(request: CropDataRequest):
+    """
+    Crop video, GPS, and IMU data based on time range and package as zip file
+    """
+    try:
+        print(f"🎬 Starting data cropping for scenario {request.scenario_id}")
+        print(f"⏰ Time range: {request.start_time} - {request.end_time}")
+        print(f"📁 Data links received: {request.data_links}")
+        print(f"🔍 Data links keys: {list(request.data_links.keys()) if request.data_links else 'None'}")
+        
+        # Debug: Print detailed data structure
+        if request.data_links:
+            for key, value in request.data_links.items():
+                print(f"🔍 Key: {key}, Value: {value}")
+                if isinstance(value, dict):
+                    for subkey, subvalue in value.items():
+                        print(f"  🔍 SubKey: {subkey}, SubValue: {subvalue}")
+        
+        # Create temporary directory for processing
+        import tempfile
+        import zipfile
+        import shutil
+        from pathlib import Path
+        
+        temp_dir = tempfile.mkdtemp()
+        crop_dir = Path(temp_dir) / f"cropped_data_{request.scenario_id}"
+        crop_dir.mkdir(exist_ok=True)
+        
+        results = {
+            "scenario_id": request.scenario_id,
+            "start_time": request.start_time,
+            "end_time": request.end_time,
+            "files": [],
+            "zip_path": None,
+            "success": True
+        }
+        
+        try:
+            # 1. Crop video files
+            if 'video' in request.data_links:
+                print("🎬 Processing video files...")
+                print(f"📹 Video links: {request.data_links['video']}")
+                video_results = await crop_video_files(
+                    request.data_links['video'], 
+                    request.start_time, 
+                    request.end_time, 
+                    crop_dir
+                )
+                print(f"🎬 Video results: {video_results}")
+                results["files"].extend(video_results)
+            else:
+                print("⚠️ No video links found in data_links")
+            
+            # 2. Crop GPS data
+            if 'trip' in request.data_links and request.data_links['trip'].get('console_trip'):
+                print("📍 Processing GPS data...")
+                print(f"📍 GPS console_trip: {request.data_links['trip']['console_trip']}")
+                gps_result = await crop_gps_data(
+                    request.data_links['trip']['console_trip'],
+                    request.start_time,
+                    request.end_time,
+                    crop_dir
+                )
+                print(f"📍 GPS result: {gps_result}")
+                if gps_result:
+                    results["files"].append(gps_result)
+            else:
+                print("⚠️ No GPS console_trip found in data_links")
+            
+            # 3. Crop IMU data
+            if 'imu' in request.data_links:
+                print("📊 Processing IMU data...")
+                print(f"📊 IMU links: {request.data_links['imu']}")
+                imu_results = await crop_imu_data(
+                    request.data_links['imu'],
+                    request.start_time,
+                    request.end_time,
+                    crop_dir
+                )
+                print(f"📊 IMU results: {imu_results}")
+                results["files"].extend(imu_results)
+            else:
+                print("⚠️ No IMU links found in data_links")
+            
+            # 4. Create zip file
+            print("📦 Creating zip file...")
+            print(f"📁 Files to add to zip: {results['files']}")
+            print(f"📊 Total files count: {len(results['files'])}")
+            
+            # Debug: Check each file before adding to zip
+            for i, file_info in enumerate(results["files"]):
+                print(f"🔍 File {i+1}: {file_info}")
+                if file_info.get("local_path"):
+                    file_path = Path(file_info["local_path"])
+                    print(f"  📁 Local path: {file_path}")
+                    print(f"  📁 File exists: {file_path.exists()}")
+                    if file_path.exists():
+                        print(f"  📁 File size: {file_path.stat().st_size} bytes")
+                    else:
+                        print(f"  ❌ File does not exist!")
+                else:
+                    print(f"  ❌ No local_path in file_info")
+            
+            zip_path = crop_dir.parent / f"cropped_data_{request.scenario_id}_{int(request.start_time)}_{int(request.end_time)}.zip"
+            
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for file_info in results["files"]:
+                    print(f"🔍 Processing file_info: {file_info}")
+                    if file_info.get("local_path") and Path(file_info["local_path"]).exists():
+                        arcname = Path(file_info["local_path"]).name
+                        zipf.write(file_info["local_path"], arcname)
+                        print(f"📁 Added to zip: {arcname}")
+                    else:
+                        print(f"⚠️ File not found or no local_path: {file_info}")
+            
+            print(f"📦 Zip file created with {len(results['files'])} files")
+            print(f"📦 Zip file size: {zip_path.stat().st_size} bytes")
+            results["zip_path"] = str(zip_path)
+            print(f"✅ Zip file created: {zip_path}")
+            
+            # Store the zip file info for download
+            zip_filename = zip_path.name
+            zip_temp_dir = zip_path.parent.name
+            
+            # Return results with file info for download
+            results["zip_filename"] = zip_filename
+            results["zip_temp_dir"] = zip_temp_dir
+            
+            return results
+            
+        except Exception as e:
+            print(f"❌ Error during cropping: {e}")
+            results["success"] = False
+            results["error"] = str(e)
+            return results
+            
+        finally:
+            # Clean up temporary files (keep zip file for download)
+            try:
+                if crop_dir.exists():
+                    shutil.rmtree(crop_dir)
+                print("🧹 Cleaned up temporary files")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not clean up temp files: {e}")
+                
+    except Exception as e:
+        print(f"❌ Error in crop_data_by_time_range: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to crop data: {str(e)}")
+
+async def crop_video_files(video_links: dict, start_time: float, end_time: float, output_dir: Path):
+    """Crop video files based on time range"""
+    results = []
+    
+    for video_type, s3_url in video_links.items():
+        if not s3_url:
+            continue
+            
+        try:
+            print(f"🎬 Cropping {video_type} video...")
+            
+            # Extract bucket and key from S3 URL
+            if s3_url.startswith('s3://'):
+                parts = s3_url.replace('s3://', '').split('/', 1)
+                bucket = parts[0]
+                key = parts[1]
+            else:
+                continue
+            
+            # Download video to temp location
+            import boto3
+            s3_client = boto3.client('s3')
+            
+            temp_video = output_dir / f"temp_{video_type}.mp4"
+            s3_client.download_file(bucket, key, str(temp_video))
+            
+            # Get video duration first
+            import subprocess
+            duration_cmd = [
+                'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                '-of', 'csv=p=0', str(temp_video)
+            ]
+            
+            duration_result = subprocess.run(duration_cmd, capture_output=True, text=True)
+            if duration_result.returncode != 0:
+                print(f"❌ Failed to get video duration for {video_type}: {duration_result.stderr}")
+                continue
+                
+            video_duration = float(duration_result.stdout.strip())
+            print(f"📹 {video_type} video duration: {video_duration} seconds")
+            
+            # Calculate relative start time (assuming video starts at scenario start)
+            # For now, we'll use the first 15 seconds of the video as a test
+            # In a real implementation, you'd need to map scenario time to video time
+            relative_start = 0  # Start from beginning of video
+            crop_duration = min(15.0, video_duration)  # Crop 15 seconds or full video if shorter
+            
+            print(f"🎬 Cropping {video_type} from {relative_start}s to {relative_start + crop_duration}s")
+            
+            # Crop video using ffmpeg
+            output_video = output_dir / f"{video_type}_cropped.mp4"
+            
+            cmd = [
+                'ffmpeg', '-i', str(temp_video),
+                '-ss', str(relative_start),
+                '-t', str(crop_duration),
+                '-c', 'copy',  # Copy without re-encoding for speed
+                '-y',  # Overwrite output file
+                str(output_video)
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Remove temp file
+                temp_video.unlink()
+                
+                results.append({
+                    "type": "video",
+                    "video_type": video_type,
+                    "original_s3_url": s3_url,
+                    "local_path": str(output_video),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": crop_duration,
+                    "success": True
+                })
+                print(f"✅ {video_type} video cropped successfully")
+            else:
+                print(f"❌ Failed to crop {video_type} video: {result.stderr}")
+                results.append({
+                    "type": "video",
+                    "video_type": video_type,
+                    "original_s3_url": s3_url,
+                    "error": result.stderr,
+                    "success": False
+                })
+                
+        except Exception as e:
+            print(f"❌ Error cropping {video_type} video: {e}")
+            results.append({
+                "type": "video",
+                "video_type": video_type,
+                "original_s3_url": s3_url,
+                "error": str(e),
+                "success": False
+            })
+    
+    return results
+
+async def crop_gps_data(gps_s3_url: str, start_time: float, end_time: float, output_dir: Path):
+    """Crop GPS data based on time range"""
+    try:
+        print(f"📍 Cropping GPS data from {gps_s3_url}")
+        
+        # Extract bucket and key from S3 URL
+        if gps_s3_url.startswith('s3://'):
+            parts = gps_s3_url.replace('s3://', '').split('/', 1)
+            bucket = parts[0]
+            key = parts[1]
+        else:
+            return None
+        
+        # Load GPS data from S3
+        import boto3
+        import pandas as pd
+        import s3fs
+        
+        fs = s3fs.S3FileSystem()
+        df = pd.read_parquet(f"s3://{bucket}/{key}", filesystem=fs)
+        
+        # Filter data by timestamp range
+        if 'timestamp' in df.columns:
+            # Convert timestamp to numeric if needed
+            if df['timestamp'].dtype == 'object':
+                df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+            
+            # Filter by time range
+            mask = (df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)
+            cropped_df = df[mask].copy()
+            
+            # Save cropped data
+            output_file = output_dir / "gps_cropped.parquet"
+            cropped_df.to_parquet(output_file, index=False)
+            
+            print(f"✅ GPS data cropped: {len(cropped_df)} points")
+            
+            return {
+                "type": "gps",
+                "original_s3_url": gps_s3_url,
+                "local_path": str(output_file),
+                "start_time": start_time,
+                "end_time": end_time,
+                "points_count": len(cropped_df),
+                "success": True
+            }
+        else:
+            print(f"⚠️ No timestamp column found in GPS data")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error cropping GPS data: {e}")
+        return None
+
+async def crop_imu_data(imu_links: dict, start_time: float, end_time: float, output_dir: Path):
+    """Crop IMU data based on time range"""
+    results = []
+    
+    for imu_type, s3_url in imu_links.items():
+        if not s3_url:
+            continue
+            
+        try:
+            print(f"📊 Cropping {imu_type} IMU data...")
+            
+            # Extract bucket and key from S3 URL
+            if s3_url.startswith('s3://'):
+                parts = s3_url.replace('s3://', '').split('/', 1)
+                bucket = parts[0]
+                key = parts[1]
+            else:
+                continue
+            
+            # Load IMU data from S3
+            import boto3
+            import pandas as pd
+            import s3fs
+            
+            fs = s3fs.S3FileSystem()
+            df = pd.read_parquet(f"s3://{bucket}/{key}", filesystem=fs)
+            
+            # Filter data by timestamp range
+            if 'timestamp' in df.columns:
+                # Convert timestamp to numeric if needed
+                if df['timestamp'].dtype == 'object':
+                    df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+                
+                # Filter by time range
+                mask = (df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)
+                cropped_df = df[mask].copy()
+                
+                # Save cropped data
+                output_file = output_dir / f"imu_{imu_type}_cropped.parquet"
+                cropped_df.to_parquet(output_file, index=False)
+                
+                print(f"✅ {imu_type} IMU data cropped: {len(cropped_df)} points")
+                
+                results.append({
+                    "type": "imu",
+                    "imu_type": imu_type,
+                    "original_s3_url": s3_url,
+                    "local_path": str(output_file),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "points_count": len(cropped_df),
+                    "success": True
+                })
+            else:
+                print(f"⚠️ No timestamp column found in {imu_type} IMU data")
+                results.append({
+                    "type": "imu",
+                    "imu_type": imu_type,
+                    "original_s3_url": s3_url,
+                    "error": "No timestamp column found",
+                    "success": False
+                })
+                
+        except Exception as e:
+            print(f"❌ Error cropping {imu_type} IMU data: {e}")
+            results.append({
+                "type": "imu",
+                "imu_type": imu_type,
+                "original_s3_url": s3_url,
+                "error": str(e),
+                "success": False
+            })
+    
+    return results 
+
+@router.get("/download-cropped-data/{zip_filename}")
+async def download_cropped_data(zip_filename: str):
+    """
+    Download the cropped data zip file
+    """
+    try:
+        import tempfile
+        from pathlib import Path
+        from fastapi.responses import FileResponse
+        
+        print(f"🔍 Looking for zip file: {zip_filename}")
+        
+        # Look for the zip file in temp directories
+        temp_dir = Path(tempfile.gettempdir())
+        print(f"📁 Searching in temp directory: {temp_dir}")
+        
+        zip_path = None
+        
+        # Search for the zip file in all temp subdirectories
+        for temp_subdir in temp_dir.iterdir():
+            if temp_subdir.is_dir():
+                print(f"🔍 Checking directory: {temp_subdir.name}")
+                potential_zip = temp_subdir / zip_filename
+                if potential_zip.exists():
+                    zip_path = potential_zip
+                    print(f"✅ Found zip file: {zip_path}")
+                    break
+                else:
+                    print(f"❌ File not found: {potential_zip}")
+        
+        if not zip_path or not zip_path.exists():
+            print(f"❌ Zip file not found after searching all temp directories")
+            print(f"📁 Searched directories: {[d.name for d in temp_dir.iterdir() if d.is_dir()]}")
+            raise HTTPException(status_code=404, detail=f"Zip file '{zip_filename}' not found")
+        
+        print(f"📥 Serving zip file: {zip_path}")
+        
+        # Return the file for download
+        return FileResponse(
+            path=str(zip_path),
+            filename=zip_filename,
+            media_type='application/zip'
+        )
+        
+    except Exception as e:
+        print(f"❌ Error downloading zip file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")

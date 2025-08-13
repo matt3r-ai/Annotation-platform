@@ -2,14 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts';
 import '../styles/ImuVisualization.css';
 
-const ImuVisualization = ({ 
-  imuData, 
-  onSegmentSelect, 
-  savedSegments, 
-  onSaveSegment, 
+const ImuVisualization = ({
+  imuData,
+  onSegmentSelect,
+  savedSegments,
+  onSaveSegment,
   onRemoveSegment,
   onSaveToFile,
   onWriteBack,
+  onCropData,
   markedStartTime,
   setMarkedStartTime,
   markedEndTime,
@@ -454,6 +455,13 @@ const ImuVisualization = ({
                 onClick={onSaveToFile}
               >
                 💾 Save File
+              </button>
+              <button 
+                className="crop-data-btn"
+                onClick={onCropData}
+                disabled={savedSegments.length === 0}
+              >
+                ✂️ Crop Data
               </button>
             </div>
           </div>

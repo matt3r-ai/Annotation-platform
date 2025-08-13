@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchScenarios, saveReviewData, processScenarios, getVideoUrl, getActivityTimeline, extractImuData } from '../services/scenarioApi';
+import { fetchScenarios, saveReviewData, getVideoUrl, getActivityTimeline, extractImuData, cropDataByTimeRange, downloadCroppedData } from '../services/scenarioApi';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import FitBoundsOnPoints from '../components/FitBoundsOnPoints';
@@ -80,6 +80,11 @@ const ScenarioAnalysisTool = () => {
   const [imuData, setImuData] = useState(null);
   const [imuLoading, setImuLoading] = useState(false);
   
+  // Cropping functionality
+  const [croppingData, setCroppingData] = useState(false);
+  const [cropProgress, setCropProgress] = useState('');
+  const [cropResult, setCropResult] = useState(null);
+  
   // 地图缩放控制 - 只有按住Alt键才能缩放
   useEffect(() => {
     // 处理滚轮事件
@@ -108,13 +113,7 @@ const ScenarioAnalysisTool = () => {
     };
   }, []);
 
-  // Step 3: Process scenarios
-  const [processingOptions, setProcessingOptions] = useState({
-    generateVideos: true,
-    extractData: true,
-    createVisualizations: true
-  });
-  const [processingStatus, setProcessingStatus] = useState({});
+
 
   // Predefined event types
   const predefinedEventTypes = [
@@ -419,7 +418,13 @@ const ScenarioAnalysisTool = () => {
         [scenarioId]: [...currentAnnotations, newAnnotation]
       });
       
+      // Reset shared selection state across all channels after saving via GPS
+      setMarkedStartTime(null);
+      setMarkedEndTime(null);
+      setSelectedTime(null);
       setSelectedGpsPoints([]);
+      setGpsStartTime(null);
+      setGpsEndTime(null);
     }
   };
 
@@ -708,6 +713,11 @@ const ScenarioAnalysisTool = () => {
       
       setMarkedStartTime(null);
       setMarkedEndTime(null);
+      setSelectedTime(null);
+      setSelectedGpsPoints([]);
+      setGpsStartTime(null);
+      setGpsEndTime(null);
+      setVideoStartTimeForSync(null);
       setSegmentDescription('');
       setShowDescriptionModal(false);
     }
@@ -738,15 +748,16 @@ const ScenarioAnalysisTool = () => {
     return annotationsData;
   };
 
+  // Write back function
   const writeAnnotationsToDb = async () => {
     const annotationsJson = generateAnnotationsJson();
-    
     if (Object.keys(annotationsJson).length === 0) {
       alert('No annotations to write back. Please create some annotations first.');
       return;
     }
-    
+
     try {
+      setLoading(true);
       const response = await fetch('/api/scenarios/annotations/write-back', {
         method: 'POST',
         headers: {
@@ -759,7 +770,7 @@ const ScenarioAnalysisTool = () => {
       
       if (response.ok) {
         const result = await response.json();
-        alert(`✅ Successfully wrote back annotations!\n\n${result.message}\nUpdated ${result.updated_count} scenarios.`);
+        alert(`✅ Successfully wrote back ${result.updated_count} annotations to database!`);
         console.log('Write-back result:', result);
       } else {
         const errorData = await response.json();
@@ -769,6 +780,75 @@ const ScenarioAnalysisTool = () => {
     } catch (error) {
       alert(`❌ Network error: ${error.message}`);
       console.error('Write-back network error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Cropping function
+  const handleCropData = async () => {
+    if (!currentScenario || savedSegments.length === 0) {
+      alert('Please select a scenario and save at least one segment first.');
+      return;
+    }
+
+    // Get the first saved segment for cropping (or let user choose)
+    const segmentToCrop = savedSegments[0];
+    
+    if (!segmentToCrop) {
+      alert('No segments available for cropping.');
+      return;
+    }
+
+    try {
+      setCroppingData(true);
+      setCropProgress('Starting data cropping...');
+      
+      // Prepare data links from current scenario
+      const dataLinks = currentScenario.data_links || {};
+      
+      console.log('Cropping data links:', dataLinks);
+      console.log('Current scenario:', currentScenario);
+      
+      setCropProgress('Cropping video files...');
+      
+      // Call cropping API
+      const result = await cropDataByTimeRange(
+        currentScenario.id,
+        segmentToCrop.startTime,
+        segmentToCrop.endTime,
+        dataLinks
+      );
+
+      if (result.success) {
+        setCropResult(result);
+        setCropProgress('Cropping completed! Preparing download...');
+        
+        // Use the zip_filename from backend result
+        const zipFilename = result.zip_filename;
+        
+        if (zipFilename) {
+          setCropProgress('Downloading zip file...');
+          
+          // Download the zip file
+          await downloadCroppedData(zipFilename);
+          
+          setCropProgress('✅ Download completed!');
+          alert(`✅ Data cropping completed successfully!\n\nFiles processed:\n${result.files.map(f => `- ${f.type}: ${f.video_type || f.imu_type || 'GPS'} (${f.success ? 'Success' : 'Failed'})`).join('\n')}`);
+        } else {
+          setCropProgress('❌ Could not extract zip filename');
+          alert('❌ Cropping completed but could not download file.');
+        }
+      } else {
+        setCropProgress(`❌ Cropping failed: ${result.error || 'Unknown error'}`);
+        alert(`❌ Data cropping failed: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error during cropping:', error);
+      setCropProgress(`❌ Error: ${error.message}`);
+      alert(`❌ Error during cropping: ${error.message}`);
+    } finally {
+      setCroppingData(false);
     }
   };
 
@@ -852,27 +932,7 @@ const ScenarioAnalysisTool = () => {
     return '';
   };
 
-  // Handle processing scenarios
-  const handleProcessScenarios = async () => {
-    setLoading(true);
-    setMessage('');
-    
-    try {
-      const selectedScenarios = scenarios.filter(s => s.selected);
-      const result = await processScenarios({
-        scenario_ids: selectedScenarios.map(s => s.id),
-        ...processingOptions
-      });
-      
-      setProcessingStatus(result);
-      setMessage(`✅ Processing started for ${selectedScenarios.length} scenarios`);
-      
-    } catch (error) {
-      setMessage(`❌ Error processing scenarios: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
+
 
   // Format timestamp for display
   const formatTimestamp = (timestamp) => {
@@ -1596,6 +1656,13 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Save File
                           </button>
+                          <button 
+                            className="crop-data-btn"
+                            onClick={handleCropData}
+                            disabled={croppingData || savedSegments.length === 0}
+                          >
+                            {croppingData ? '⏳ Cropping...' : '✂️ Crop Data'}
+                          </button>
                         </div>
                       </div>
                       <div className="segments-list">
@@ -1624,6 +1691,25 @@ const ScenarioAnalysisTool = () => {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  
+                  {/* Cropping Progress */}
+                  {croppingData && (
+                    <div className="cropping-progress">
+                      <p className="progress-text">{cropProgress}</p>
+                    </div>
+                  )}
+                  
+                  {/* Cropping Result */}
+                  {cropResult && !croppingData && (
+                    <div className="cropping-progress">
+                      <p className="progress-text progress-success">
+                        ✅ Cropping completed successfully!
+                      </p>
+                      <p className="progress-text">
+                        Files processed: {cropResult.files.filter(f => f.success).length}/{cropResult.files.length}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -1678,11 +1764,11 @@ const ScenarioAnalysisTool = () => {
                   const currentAnnotations = annotations[scenarioId] || [];
                   const newAnnotation = {
                     id: newSegment.id,
+                    startTime: newSegment.startTime,
+                    endTime: newSegment.endTime,
+                    localStartTime: newSegment.localStartTime,
+                    localEndTime: newSegment.localEndTime,
                     mode: 'imu',
-                    startTime: Math.round(globalStartTime),
-                    endTime: Math.round(globalEndTime),
-                    localStartTime: segmentData.startTime,
-                    localEndTime: segmentData.endTime,
                     timestamp: new Date().toISOString()
                   };
                   
@@ -1690,34 +1776,26 @@ const ScenarioAnalysisTool = () => {
                     ...annotations,
                     [scenarioId]: [...currentAnnotations, newAnnotation]
                   });
+
+                  // Reset shared selection state across all channels after saving via IMU
+                  setMarkedStartTime(null);
+                  setMarkedEndTime(null);
+                  setSelectedTime(null);
+                  setSelectedGpsPoints([]);
+                  setGpsStartTime(null);
+                  setGpsEndTime(null);
+                  setVideoStartTimeForSync(null);
                 }}
                 onRemoveSegment={handleRemoveSegment}
                 onSaveToFile={handleSaveToFile}
                 onWriteBack={writeAnnotationsToDb}
+                onCropData={handleCropData}
                 markedStartTime={markedStartTime}
                 setMarkedStartTime={setMarkedStartTime}
                 markedEndTime={markedEndTime}
                 setMarkedEndTime={setMarkedEndTime}
                 selectedTime={selectedTime}
                 setSelectedTime={setSelectedTime}
-                onTimeSync={(type, time) => {
-                  // IMU时间同步到GPS
-                  const nearestGpsPoint = findNearestGpsPoint(time);
-                  if (nearestGpsPoint) {
-                    if (type === 'start') {
-                      setGpsStartTime(nearestGpsPoint.timestamp);
-                      setSelectedGpsPoints([nearestGpsPoint]);
-                    } else if (type === 'end') {
-                      setGpsEndTime(nearestGpsPoint.timestamp);
-                      const startPoint = selectedGpsPoints.length > 0 ? selectedGpsPoints[0] : null;
-                      if (startPoint && startPoint.timestamp !== nearestGpsPoint.timestamp) {
-                        setSelectedGpsPoints([startPoint, nearestGpsPoint]);
-                      } else {
-                        setSelectedGpsPoints([nearestGpsPoint]);
-                      }
-                    }
-                  }
-                }}
               />
             )
           ) : (
@@ -1970,6 +2048,13 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Save File
                           </button>
+                          <button 
+                            className="crop-data-btn"
+                            onClick={handleCropData}
+                            disabled={croppingData || savedSegments.length === 0}
+                          >
+                            {croppingData ? '⏳ Cropping...' : '✂️ Crop Data'}
+                          </button>
                         </div>
                       </div>
                       <div className="segments-list">
@@ -2000,6 +2085,25 @@ const ScenarioAnalysisTool = () => {
                       </div>
                     </div>
                   )}
+                  
+                  {/* Cropping Progress */}
+                  {croppingData && (
+                    <div className="cropping-progress">
+                      <p className="progress-text">{cropProgress}</p>
+                    </div>
+                  )}
+                  
+                  {/* Cropping Result */}
+                  {cropResult && !croppingData && (
+                    <div className="cropping-progress">
+                      <p className="progress-text progress-success">
+                        ✅ Cropping completed successfully!
+                      </p>
+                      <p className="progress-text">
+                        Files processed: {cropResult.files.filter(f => f.success).length}/{cropResult.files.length}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -2011,86 +2115,7 @@ const ScenarioAnalysisTool = () => {
     </div>
   );
 
-  const renderStep3 = () => (
-    <div className="process-step">
-      <div className="step-header">
-        <h2>⚙️ Process & Extract</h2>
-        <p className="step-description">Generate processed data and visualizations</p>
-      </div>
-      
-      <div className="processing-options">
-        <h3>🔧 Processing Options</h3>
-        <div className="options-grid">
-          <label className="option-item">
-            <input 
-              type="checkbox" 
-              checked={processingOptions.generateVideos}
-              onChange={(e) => setProcessingOptions({
-                ...processingOptions,
-                generateVideos: e.target.checked
-              })}
-            />
-            <span className="option-icon">🎬</span>
-            <span className="option-text">Generate cropped videos</span>
-          </label>
-          <label className="option-item">
-            <input 
-              type="checkbox" 
-              checked={processingOptions.extractData}
-              onChange={(e) => setProcessingOptions({
-                ...processingOptions,
-                extractData: e.target.checked
-              })}
-            />
-            <span className="option-icon">📊</span>
-            <span className="option-text">Extract trip data</span>
-          </label>
-          <label className="option-item">
-            <input 
-              type="checkbox" 
-              checked={processingOptions.createVisualizations}
-              onChange={(e) => setProcessingOptions({
-                ...processingOptions,
-                createVisualizations: e.target.checked
-              })}
-            />
-            <span className="option-icon">📈</span>
-            <span className="option-text">Create visualizations</span>
-          </label>
-        </div>
-        
-        <button 
-          className="primary-button"
-          onClick={handleProcessScenarios}
-          disabled={loading}
-        >
-          {loading ? '⏳ Processing...' : '🚀 Process Scenarios'}
-        </button>
-      </div>
-      
-      <div className="processing-status">
-        <h3>📊 Processing Status</h3>
-        {processingStatus && (
-          <div className="status-content">
-            <div className="progress-bar">
-              <div className="progress-fill" style={{width: loading ? '60%' : '100%'}}></div>
-            </div>
-            <div className="status-message">{processingStatus}</div>
-          </div>
-        )}
-      </div>
-      
-      <div className="results-preview">
-        <h3>📋 Results Preview</h3>
-        <div className="results-grid">
-          <div className="result-placeholder">
-            <div className="placeholder-icon">📋</div>
-            <p>Results will appear here after processing</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+
 
   return (
     <div className="App">
@@ -2133,13 +2158,7 @@ const ScenarioAnalysisTool = () => {
                   <div className="step-icon">🎬</div>
                   <div className="step-title">Review & Mark</div>
                 </div>
-                <div 
-                  className={`step ${currentStep === 3 ? 'active' : ''}`}
-                  onClick={() => setCurrentStep(3)}
-                >
-                  <div className="step-icon">⚙️</div>
-                  <div className="step-title">Process & Extract</div>
-                </div>
+
               </div>
               
               <div className="status-card">
@@ -2175,7 +2194,6 @@ const ScenarioAnalysisTool = () => {
             <div className="main-content">
               {currentStep === 1 && renderStep1()}
               {currentStep === 2 && renderStep2()}
-              {currentStep === 3 && renderStep3()}
             </div>
           </>
         )}

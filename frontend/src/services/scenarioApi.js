@@ -125,4 +125,42 @@ export const extractImuData = async (scenarioId) => {
   }
 };
 
+export const cropDataByTimeRange = async (scenarioId, startTime, endTime, dataLinks) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/crop-data`, {
+      scenario_id: scenarioId,
+      start_time: startTime,
+      end_time: endTime,
+      data_links: dataLinks
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error cropping data:', error);
+    throw error;
+  }
+};
+
+export const downloadCroppedData = async (zipFilename) => {
+  try {
+    const response = await axios.get(`${API_BASE_URL}/api/scenarios/download-cropped-data/${zipFilename}`, {
+      responseType: 'blob'
+    });
+    
+    // Create download link
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', zipFilename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error downloading cropped data:', error);
+    throw error;
+  }
+};
+
  

@@ -17,7 +17,8 @@ import uuid
 from scenario_analysis import router as scenario_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "saved_video")
+# 使用项目根目录的saved_video目录
+STATIC_DIR = os.path.join(os.path.dirname(BASE_DIR), "saved_video")
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -293,7 +294,7 @@ def clip_local_video(req: LocalVideoClipRequest):
     print(f"Extracted org_id: {org_id}, key_id: {key_id} from path: {file_path}")
     
     # Create temporary save directory for local files
-    save_dir = "C:/Users/75672/Downloads/annotation-platform/saved_video/local"
+    save_dir = "/saved_video/local"
     os.makedirs(save_dir, exist_ok=True)
     
     # Use existing clip function, passing org_id and key_id extracted from path

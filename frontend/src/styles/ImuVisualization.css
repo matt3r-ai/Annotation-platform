@@ -425,3 +425,30 @@
     padding: 10px;
   }
 } 
+
+/* Crop Data Button Styles */
+.crop-data-btn {
+  padding: 6px 12px;
+  border: 1px solid #9b59b6; /* Purple border */
+  background: white;
+  color: #9b59b6; /* Purple text */
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s;
+  margin-left: 8px;
+}
+
+.crop-data-btn:hover:not(:disabled) {
+  background: #9b59b6; /* Purple background on hover */
+  color: white;
+}
+
+.crop-data-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f5f5f5;
+  color: #999;
+  border-color: #ddd;
+} 
