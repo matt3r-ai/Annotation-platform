@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p /app/saved_video /app/downloads
+RUN mkdir -p /app/saved_video /app/downloads /saved_video
 
 # Expose port
 EXPOSE 8000
