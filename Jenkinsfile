@@ -10,8 +10,8 @@ pipeline {
     NOMAD_TOKEN                            = credentials('jenkins-nomad-token')
     registryName                           = '963414178352.dkr.ecr.us-west-2.amazonaws.com'
     registryNameSpace                      = '/annotation-platform'
-    apBackendImageName                     = 'annotation-platform-backend'
-    apFrontendImageName                    = 'annotation-platform-frontend'
+    apBackendImageName                     = '/annotation-platform-backend'
+    apFrontendImageName                    = '/annotation-platform-frontend'
     apBackendImage                         = ''
     apFrontendImage                        = ''
   }
