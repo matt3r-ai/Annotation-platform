@@ -99,7 +99,7 @@ mock_scenarios = [
 ]
 
 # Video download configuration
-DOWNLOAD_DIR = "./downloads"
+DOWNLOAD_DIR = "/app/data/downloads"
 S3_BUCKET = "matt3r-driving-footage-us-west-2"
 
 def ensure_download_dir():
