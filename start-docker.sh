@@ -29,6 +29,11 @@ if [ ! -f .env ]; then
     read
 fi
 
+# Create necessary directories for the unified volume
+echo -e "${GREEN}📁 Creating directory structure for unified volume...${NC}"
+mkdir -p ./data/saved_video
+mkdir -p ./data/downloads
+
 # Build and start containers
 echo -e "${GREEN}🔨 Building containers...${NC}"
 docker-compose build
@@ -43,9 +48,11 @@ sleep 10
 # Check if services are running
 if docker-compose ps | grep -q "Up"; then
     echo -e "${GREEN}✅ Services are running!${NC}"
-    echo -e "${GREEN}🌐 Frontend: http://localhost${NC}"
+    echo -e "${GREEN}🌐 Frontend: http://localhost:9999${NC}"
     echo -e "${GREEN}🔧 Backend API: http://localhost:8000${NC}"
     echo -e "${GREEN}📊 Health Check: http://localhost:8000/api/health${NC}"
+    echo -e "${GREEN}💾 Data Volume: annotation-platform-backend-volume:/app/data${NC}"
+    echo -e "${GREEN}📁 Subdirectories: /app/data/saved_video, /app/data/downloads${NC}"
 else
     echo -e "${RED}❌ Services failed to start. Check logs with: docker-compose logs${NC}"
     exit 1

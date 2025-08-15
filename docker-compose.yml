@@ -15,8 +15,7 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
     volumes:
-      - ./saved_video:/app/saved_video
-      - ./backend/downloads:/app/downloads
+      - annotation-platform-backend-volume:/app/data
     networks:
       - annotation-network
     restart: unless-stopped
@@ -55,5 +54,5 @@ networks:
     driver: bridge
 
 volumes:
-  saved_videos:
+  annotation-platform-backend-volume:
     driver: local 

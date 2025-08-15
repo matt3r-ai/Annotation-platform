@@ -17,8 +17,8 @@ import uuid
 from scenario_analysis import router as scenario_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 使用项目根目录的saved_video目录
-STATIC_DIR = os.path.join(os.path.dirname(BASE_DIR), "saved_video")
+# 使用统一的volume目录结构
+STATIC_DIR = "/app/data/saved_video"
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -207,7 +207,7 @@ def clip_video(req: VideoClipRequest):
     print(f"Received request - preview_mode: {req.preview_mode}")  # Debug info
     # Only one range, as per frontend usage
     timestamp_ranges = [(None, req.start_ts, req.end_ts)]
-    save_dir = "C:/Users/75672/Downloads/annotation-platform/saved_video"  # Save to specified directory
+    save_dir = "/app/data/saved_video"  # 使用统一的volume目录
     results = download_and_clip_videos_by_ranges(
         timestamp_ranges,
         s3_bucket="matt3r-driving-footage-us-west-2",  # Use video data bucket
@@ -294,7 +294,7 @@ def clip_local_video(req: LocalVideoClipRequest):
     print(f"Extracted org_id: {org_id}, key_id: {key_id} from path: {file_path}")
     
     # Create temporary save directory for local files
-    save_dir = "/saved_video/local"
+    save_dir = "/app/data/saved_video/local"
     os.makedirs(save_dir, exist_ok=True)
     
     # Use existing clip function, passing org_id and key_id extracted from path
@@ -386,7 +386,7 @@ def download_video_to_local(data: dict):
     if not key:
         return {"success": False, "error": "Missing key"}
     key = unquote(key)
-    local_dir = "../saved_video"
+    local_dir = "/app/data/saved_video"  # 使用统一的volume目录
     os.makedirs(local_dir, exist_ok=True)
     filename = os.path.basename(key)
     local_path = os.path.join(local_dir, filename)
