@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchScenarios, saveReviewData, getVideoUrl, getActivityTimeline, extractImuData, cropDataByTimeRange, downloadCroppedData } from '../services/scenarioApi';
+import { fetchScenarios, saveReviewData, getVideoUrl, getActivityTimeline, extractImuData, cropDataByTimeRange, cropDataByTimeRanges, downloadCroppedData } from '../services/scenarioApi';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import FitBoundsOnPoints from '../components/FitBoundsOnPoints';
@@ -60,6 +61,7 @@ const ScenarioAnalysisTool = () => {
   const [videoStartTimeForSync, setVideoStartTimeForSync] = useState(null); // 用于同步的临时开始时间
   const [savedSegments, setSavedSegments] = useState([]);
   const [allLabeledData, setAllLabeledData] = useState([]);
+  const [segmentLabel, setSegmentLabel] = useState('');
   
   // GPS time alignment functionality
   const [gpsStartTime, setGpsStartTime] = useState(null);
@@ -84,6 +86,11 @@ const ScenarioAnalysisTool = () => {
   const [croppingData, setCroppingData] = useState(false);
   const [cropProgress, setCropProgress] = useState('');
   const [cropResult, setCropResult] = useState(null);
+  
+  // History (local) - store saved CSV snapshots
+  const [historyItems, setHistoryItems] = useLocalStorage('scenario_history', []);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(true);
+  const [historyDetail, setHistoryDetail] = useState(null);
   
   // 地图缩放控制 - 只有按住Alt键才能缩放
   useEffect(() => {
@@ -142,6 +149,26 @@ const ScenarioAnalysisTool = () => {
     'weather-condition': 'Weather Condition',
     'road-condition': 'Road Condition',
     'unknown': 'Unknown Event'
+  };
+
+  // Scenario navigation helpers
+  const getCurrentScenarioIndex = () => {
+    if (!currentScenario) return -1;
+    return scenarios.findIndex(s => s.id === currentScenario.id);
+  };
+
+  const handlePrevScenario = () => {
+    const idx = getCurrentScenarioIndex();
+    if (idx > 0) {
+      handleStartReview(scenarios[idx - 1]);
+    }
+  };
+
+  const handleNextScenario = () => {
+    const idx = getCurrentScenarioIndex();
+    if (idx >= 0 && idx < scenarios.length - 1) {
+      handleStartReview(scenarios[idx + 1]);
+    }
   };
 
   // Handle data source selection
@@ -392,6 +419,7 @@ const ScenarioAnalysisTool = () => {
         localEndTime: relativeEndTime,
         scenario: currentScenario,
         mode: 'gps',
+        label: segmentLabel || null,
         startPoint: startPoint,
         endPoint: endPoint
       };
@@ -408,6 +436,7 @@ const ScenarioAnalysisTool = () => {
         endTime: Math.round(endPoint.timestamp),
         localStartTime: relativeStartTime,
         localEndTime: relativeEndTime,
+        label: segmentLabel || null,
         startPoint: startPoint,
         endPoint: endPoint,
         timestamp: new Date().toISOString()
@@ -425,6 +454,7 @@ const ScenarioAnalysisTool = () => {
       setSelectedGpsPoints([]);
       setGpsStartTime(null);
       setGpsEndTime(null);
+      setSegmentLabel('');
     }
   };
 
@@ -687,6 +717,7 @@ const ScenarioAnalysisTool = () => {
         localEndTime: markedEndTime,
         scenario: currentScenario,
         mode: 'video',
+        label: segmentLabel || null,
         description: segmentDescription
       };
       
@@ -702,6 +733,7 @@ const ScenarioAnalysisTool = () => {
         endTime: Math.round(globalEndTime),
         localStartTime: markedStartTime,
         localEndTime: markedEndTime,
+        label: segmentLabel || null,
         description: segmentDescription,
         timestamp: new Date().toISOString()
       };
@@ -719,6 +751,7 @@ const ScenarioAnalysisTool = () => {
       setGpsEndTime(null);
       setVideoStartTimeForSync(null);
       setSegmentDescription('');
+      setSegmentLabel('');
       setShowDescriptionModal(false);
     }
   };
@@ -739,6 +772,7 @@ const ScenarioAnalysisTool = () => {
           end_time: annotation.endTime,
           local_start_time: annotation.localStartTime,
           local_end_time: annotation.localEndTime,
+            label: annotation.label || null,
           description: annotation.description || null,
           created_at: annotation.timestamp
         }));
@@ -812,16 +846,33 @@ const ScenarioAnalysisTool = () => {
       
       setCropProgress('Cropping video files...');
       
-      // Call cropping API
-      const result = await cropDataByTimeRange(
-        currentScenario.id,
-        segmentToCrop.startTime,
-        segmentToCrop.endTime,
-        dataLinks
-      );
+      // Call single or multi-segment cropping API
+      let result;
+      if (savedSegments.length > 1) {
+        const segments = savedSegments.map(s => ({ startTime: s.startTime, endTime: s.endTime }));
+        if (window && window.console) {
+          console.log('Cropping multiple segments:', segments);
+        }
+        result = await cropDataByTimeRanges(
+          currentScenario.id,
+          segments,
+          dataLinks,
+          currentScenario.start_time || null
+        );
+      } else {
+        result = await cropDataByTimeRange(
+          currentScenario.id,
+          segmentToCrop.startTime,
+          segmentToCrop.endTime,
+          dataLinks,
+          currentScenario.start_time || null
+        );
+      }
 
       if (result.success) {
-        setCropResult(result);
+        // Normalize files list for UI rendering
+        const normalizedFiles = result.files || (result.segment_results ? result.segment_results.flatMap(seg => seg.files || []) : []);
+        setCropResult({ ...result, files: normalizedFiles });
         setCropProgress('Cropping completed! Preparing download...');
         
         // Use the zip_filename from backend result
@@ -834,7 +885,8 @@ const ScenarioAnalysisTool = () => {
           await downloadCroppedData(zipFilename);
           
           setCropProgress('✅ Download completed!');
-          alert(`✅ Data cropping completed successfully!\n\nFiles processed:\n${result.files.map(f => `- ${f.type}: ${f.video_type || f.imu_type || 'GPS'} (${f.success ? 'Success' : 'Failed'})`).join('\n')}`);
+          const filesForAlert = normalizedFiles || [];
+          alert(`✅ Data cropping completed successfully!\n\nFiles processed:\n${filesForAlert.map(f => `- ${f.type}: ${f.video_type || f.imu_type || 'GPS'} (${f.success ? 'Success' : 'Failed'})`).join('\n')}`);
         } else {
           setCropProgress('❌ Could not extract zip filename');
           alert('❌ Cropping completed but could not download file.');
@@ -881,6 +933,7 @@ const ScenarioAnalysisTool = () => {
         interesting: scenario.interesting || '',
         segment_start: segment.startTime,
         segment_end: segment.endTime,
+        label: segment.label || '',
         description: segment.description || ''
       };
       
@@ -891,7 +944,7 @@ const ScenarioAnalysisTool = () => {
     const csvHeaders = [
       'id', 'org_id', 'key_id', 'vin', 'start_time', 'end_time', 
       'data_links', 'data_source_status', 'dmp_status', 'created_at', 
-      'updated_at', 'osm_tags', 'interesting', 'segment_start', 'segment_end', 'description'
+      'updated_at', 'osm_tags', 'interesting', 'segment_start', 'segment_end', 'label', 'description'
     ];
 
     const csvContent = [
@@ -917,6 +970,22 @@ const ScenarioAnalysisTool = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    // Add to history automatically when saving file
+    try {
+      const item = {
+        id: Date.now(),
+        scenarioId: currentScenario?.id || null,
+        createdAt: new Date().toISOString(),
+        type: 'csv',
+        filename: a.download,
+        count: savedSegments.length,
+        rows: csvData,
+      };
+      setHistoryItems([item, ...(historyItems || [])].slice(0, 200));
+    } catch (e) {
+      console.warn('Failed to add history snapshot:', e);
+    }
   };
 
   // Format time for display
@@ -1375,6 +1444,32 @@ const ScenarioAnalysisTool = () => {
         <div className="video-reviewer-container">
           <div className="scenario-info">
             <h3>📹 Reviewing Scenario #{currentScenario.id}</h3>
+            {/* Navigation between scenarios */}
+            {scenarios && scenarios.length > 0 && (
+              (() => {
+                const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
+                const total = scenarios.length;
+                return (
+                  <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}>
+                    <button 
+                      className="compact-review-btn"
+                      onClick={handlePrevScenario}
+                      disabled={loading || currentIndex <= 0}
+                    >
+                      ← Previous
+                    </button>
+                    <span className="scenario-index">{currentIndex + 1} / {total}</span>
+                    <button 
+                      className="compact-review-btn"
+                      onClick={handleNextScenario}
+                      disabled={loading || currentIndex >= total - 1}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                );
+              })()
+            )}
             <div className="scenario-meta">
               <span className="meta-item">
                 <span className="meta-icon">{getEventTypeIcon(currentScenario.event_type)}</span>
@@ -1561,6 +1656,20 @@ const ScenarioAnalysisTool = () => {
                       >
                         🎯 Mark End
                       </button>
+                    <select
+                      value={segmentLabel || ''}
+                      onChange={(e) => setSegmentLabel(e.target.value)}
+                      className="label-select"
+                    >
+                      <option value="">Select label...</option>
+                      <option value="left_turn">left turn</option>
+                      <option value="right_turn">right turn</option>
+                      <option value="left_lane_change">left lane change</option>
+                      <option value="right_lane_change">right lane change</option>
+                      <option value="u_turn">u-turn</option>
+                      <option value="harsh_brake">harsh brake</option>
+                      <option value="bump">bump</option>
+                    </select>
                       <button 
                         className="save-segment-btn"
                         onClick={handleSaveSegment}
@@ -1656,6 +1765,39 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Save File
                           </button>
+                  <button 
+                    className="save-file-btn"
+                    onClick={() => {
+                      try {
+                        const item = {
+                          id: Date.now(),
+                          scenarioId: currentScenario?.id || null,
+                          createdAt: new Date().toISOString(),
+                          type: 'snapshot',
+                          title: `Segments x${savedSegments.length}`,
+                          rows: savedSegments.map(s => ({
+                            id: s.scenario?.id,
+                            org_id: s.scenario?.org_id || s.scenario?.orgId || '',
+                            key_id: s.scenario?.key_id || s.scenario?.keyId || '',
+                            vin: s.scenario?.vin || '',
+                            start_time: s.scenario?.start_time || '',
+                            end_time: s.scenario?.end_time || '',
+                            mode: s.mode,
+                            segment_start: s.startTime,
+                            segment_end: s.endTime,
+                            label: s.label || '',
+                            description: s.description || ''
+                          }))
+                        };
+                        setHistoryItems([item, ...(historyItems || [])].slice(0, 200));
+                        alert('✅ Added to history');
+                      } catch (e) {
+                        alert('❌ Failed to add to history');
+                      }
+                    }}
+                  >
+                    🕘 Add to History
+                  </button>
                           <button 
                             className="crop-data-btn"
                             onClick={handleCropData}
@@ -1754,7 +1896,8 @@ const ScenarioAnalysisTool = () => {
                     localStartTime: segmentData.startTime,
                     localEndTime: segmentData.endTime,
                     scenario: currentScenario,
-                    mode: 'imu'
+                    mode: 'imu',
+                    label: segmentData.label || segmentLabel || null
                   };
                   
                   setSavedSegments([...savedSegments, newSegment]);
@@ -1769,6 +1912,7 @@ const ScenarioAnalysisTool = () => {
                     localStartTime: newSegment.localStartTime,
                     localEndTime: newSegment.localEndTime,
                     mode: 'imu',
+                    label: newSegment.label || null,
                     timestamp: new Date().toISOString()
                   };
                   
@@ -1785,11 +1929,14 @@ const ScenarioAnalysisTool = () => {
                   setGpsStartTime(null);
                   setGpsEndTime(null);
                   setVideoStartTimeForSync(null);
+                  setSegmentLabel('');
                 }}
                 onRemoveSegment={handleRemoveSegment}
                 onSaveToFile={handleSaveToFile}
                 onWriteBack={writeAnnotationsToDb}
                 onCropData={handleCropData}
+                segmentLabel={segmentLabel}
+                setSegmentLabel={setSegmentLabel}
                 markedStartTime={markedStartTime}
                 setMarkedStartTime={setMarkedStartTime}
                 markedEndTime={markedEndTime}
@@ -2048,6 +2195,39 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Save File
                           </button>
+                  <button 
+                    className="save-file-btn"
+                    onClick={() => {
+                      try {
+                        const item = {
+                          id: Date.now(),
+                          scenarioId: currentScenario?.id || null,
+                          createdAt: new Date().toISOString(),
+                          type: 'snapshot',
+                          title: `Segments x${savedSegments.length}`,
+                          rows: savedSegments.map(s => ({
+                            id: s.scenario?.id,
+                            org_id: s.scenario?.org_id || s.scenario?.orgId || '',
+                            key_id: s.scenario?.key_id || s.scenario?.keyId || '',
+                            vin: s.scenario?.vin || '',
+                            start_time: s.scenario?.start_time || '',
+                            end_time: s.scenario?.end_time || '',
+                            mode: s.mode,
+                            segment_start: s.startTime,
+                            segment_end: s.endTime,
+                            label: s.label || '',
+                            description: s.description || ''
+                          }))
+                        };
+                        setHistoryItems([item, ...(historyItems || [])].slice(0, 200));
+                        alert('✅ Added to history');
+                      } catch (e) {
+                        alert('❌ Failed to add to history');
+                      }
+                    }}
+                  >
+                    🕘 Add to History
+                  </button>
                           <button 
                             className="crop-data-btn"
                             onClick={handleCropData}
@@ -2189,12 +2369,152 @@ const ScenarioAnalysisTool = () => {
               >
                 Change Data Source
               </button>
+
+              {/* History Panel */}
+              <div className="status-card" style={{ marginTop: '16px' }}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+                  <h4 style={{margin:0}}>History</h4>
+                  <div style={{display:'flex',gap:6}}>
+                    <button className="compact-btn" onClick={() => setIsHistoryOpen(!isHistoryOpen)}>
+                      {isHistoryOpen ? 'Hide' : 'Show'}
+                    </button>
+                    <button className="compact-btn" onClick={() => {
+                      if (window.confirm('Clear all history?')) {
+                        setHistoryItems([]);
+                      }
+                    }}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                {isHistoryOpen && (
+                  <div className="history-list" style={{maxHeight: '260px', overflowY: 'auto', marginTop: '8px'}}>
+                    {(historyItems || []).length === 0 ? (
+                      <div className="status-item">No history yet</div>
+                    ) : (
+                      (historyItems || []).map((h) => (
+                        <div 
+                          key={h.id} 
+                          className="status-item"
+                          style={{cursor:'pointer'}}
+                          onClick={() => setHistoryDetail(h)}
+                          title="View details"
+                        >
+                          <span className="status-label">{new Date(h.createdAt).toLocaleString()}</span>
+                          <span className="status-value">{h.title || h.filename || `${h.type} (${h.count||0})`}</span>
+                          <button 
+                            className="remove-segment-btn"
+                            style={{marginLeft: 6}}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setHistoryItems((historyItems || []).filter(item => item.id !== h.id));
+                            }}
+                            title="Delete"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
             
             <div className="main-content">
               {currentStep === 1 && renderStep1()}
               {currentStep === 2 && renderStep2()}
             </div>
+            
+            {/* History Detail Drawer */}
+            {historyDetail && (
+              <div className="description-modal-overlay" onClick={() => setHistoryDetail(null)}>
+                <div className="description-modal" onClick={(e) => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <h3>🕘 History Detail</h3>
+                    <button 
+                      className="close-modal-btn"
+                      onClick={() => setHistoryDetail(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="modal-content" style={{maxHeight:'60vh', overflowY:'auto'}}>
+                    <div className="segment-info-display" style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                      <span>Scenario: {historyDetail.scenarioId ?? '—'}</span>
+                      <span>Created: {new Date(historyDetail.createdAt).toLocaleString()}</span>
+                      <span>Type: {historyDetail.type}</span>
+                      {historyDetail.filename && <span>File: {historyDetail.filename}</span>}
+                      {historyDetail.title && <span>Title: {historyDetail.title}</span>}
+                    </div>
+                    <div style={{marginTop:12}}>
+                      {(historyDetail.rows || []).length === 0 ? (
+                        <div className="no-points">No rows</div>
+                      ) : (
+                        <table className="history-table" style={{width:'100%', fontSize:12}}>
+                          <thead>
+                            <tr>
+                              {Object.keys(historyDetail.rows[0]).map((k) => (
+                                <th key={k} style={{textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #2b3a44'}}>{k}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {historyDetail.rows.map((r, idx) => (
+                              <tr key={idx}>
+                                {Object.keys(historyDetail.rows[0]).map((k) => (
+                                  <td key={k} style={{padding:'6px 8px', borderBottom:'1px dashed #2b3a44'}}>
+                                    {String(r[k] ?? '')}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                  <div className="modal-actions">
+                    <button 
+                      className="cancel-btn"
+                      onClick={() => setHistoryDetail(null)}
+                    >
+                      Close
+                    </button>
+                    <button 
+                      className="save-btn"
+                      onClick={() => {
+                        try {
+                          const headers = Object.keys((historyDetail.rows || [])[0] || {});
+                          const csv = [
+                            headers.join(','),
+                            ... (historyDetail.rows || []).map(row => headers.map(h => {
+                              const v = row[h];
+                              return typeof v === 'string' && (v.includes(',') || v.includes('"'))
+                                ? `"${v.replace(/"/g, '""')}"`
+                                : v;
+                            }).join(','))
+                          ].join('\n');
+                          const blob = new Blob([csv], { type: 'text/csv' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = historyDetail.filename || `history_${historyDetail.id}.csv`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                        } catch (e) {
+                          alert('Export failed');
+                        }
+                      }}
+                    >
+                      Export CSV
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

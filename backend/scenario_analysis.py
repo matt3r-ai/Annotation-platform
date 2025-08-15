@@ -1669,6 +1669,22 @@ class CropDataRequest(BaseModel):
     start_time: float
     end_time: float
     data_links: dict
+    # Optional: absolute start time of the scenario/video timeline (epoch seconds)
+    scenario_start_time: Optional[float] = None
+
+# --- Multi-segment cropping support ---
+from typing import List
+
+class SegmentTimeRange(BaseModel):
+    start_time: float
+    end_time: float
+
+class CropSegmentsRequest(BaseModel):
+    scenario_id: int
+    segments: List[SegmentTimeRange]
+    data_links: dict
+    # Optional: absolute start time of the scenario/video timeline (epoch seconds)
+    scenario_start_time: Optional[float] = None
 
 @router.post("/crop-data")
 async def crop_data_by_time_range(request: CropDataRequest):
@@ -1717,7 +1733,8 @@ async def crop_data_by_time_range(request: CropDataRequest):
                     request.data_links['video'], 
                     request.start_time, 
                     request.end_time, 
-                    crop_dir
+                    crop_dir,
+                    request.scenario_start_time
                 )
                 print(f"🎬 Video results: {video_results}")
                 results["files"].extend(video_results)
@@ -1820,8 +1837,133 @@ async def crop_data_by_time_range(request: CropDataRequest):
         print(f"❌ Error in crop_data_by_time_range: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to crop data: {str(e)}")
 
-async def crop_video_files(video_links: dict, start_time: float, end_time: float, output_dir: Path):
-    """Crop video files based on time range"""
+@router.post("/crop-data-multi")
+async def crop_data_by_time_ranges(request: CropSegmentsRequest):
+    """
+    Crop multiple time ranges. For each segment, create a separate folder containing
+    the cropped video/GPS/IMU files, then package all segment folders into a single zip.
+    """
+    try:
+        import tempfile
+        import zipfile
+        import shutil
+        from pathlib import Path
+
+        if not request.segments or len(request.segments) == 0:
+            raise HTTPException(status_code=400, detail="segments is required and must be non-empty")
+
+        temp_dir = tempfile.mkdtemp()
+        base_dir = Path(temp_dir) / f"cropped_data_{request.scenario_id}"
+        base_dir.mkdir(exist_ok=True)
+
+        overall_results = {
+            "scenario_id": request.scenario_id,
+            "segments": [
+                {"start_time": seg.start_time, "end_time": seg.end_time} for seg in request.segments
+            ],
+            "segment_results": [],
+            "zip_path": None,
+            "success": True,
+        }
+
+        # Process each segment into its own subdirectory
+        for idx, seg in enumerate(request.segments):
+            segment_dir = base_dir / f"segment_{idx + 1}_{int(seg.start_time)}_{int(seg.end_time)}"
+            segment_dir.mkdir(exist_ok=True)
+
+            segment_result = {
+                "index": idx + 1,
+                "start_time": seg.start_time,
+                "end_time": seg.end_time,
+                "files": [],
+                "success": True,
+            }
+
+            try:
+                # 1) Videos
+                if 'video' in request.data_links:
+                    video_results = await crop_video_files(
+                        request.data_links['video'],
+                        seg.start_time,
+                        seg.end_time,
+                        segment_dir,
+                        request.scenario_start_time
+                    )
+                    segment_result["files"].extend(video_results)
+
+                # 2) GPS
+                if 'trip' in request.data_links and request.data_links['trip'].get('console_trip'):
+                    gps_result = await crop_gps_data(
+                        request.data_links['trip']['console_trip'],
+                        seg.start_time,
+                        seg.end_time,
+                        segment_dir
+                    )
+                    if gps_result:
+                        segment_result["files"].append(gps_result)
+
+                # 3) IMU
+                if 'imu' in request.data_links:
+                    imu_results = await crop_imu_data(
+                        request.data_links['imu'],
+                        seg.start_time,
+                        seg.end_time,
+                        segment_dir
+                    )
+                    segment_result["files"].extend(imu_results)
+
+            except Exception as e:
+                segment_result["success"] = False
+                segment_result["error"] = str(e)
+
+            overall_results["segment_results"].append(segment_result)
+
+        # Create a single zip that keeps folder structure
+        zip_path = base_dir.parent / (
+            f"cropped_data_{request.scenario_id}_{len(request.segments)}segments.zip"
+        )
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for seg in overall_results["segment_results"]:
+                for file_info in seg.get("files", []):
+                    try:
+                        local_path = file_info.get("local_path")
+                        if not local_path:
+                            continue
+                        lp = Path(local_path)
+                        if not lp.exists():
+                            continue
+                        # Put files under their segment folder name
+                        segment_folder = f"segment_{seg['index']}_{int(seg['start_time'])}_{int(seg['end_time'])}"
+                        arcname = f"{segment_folder}/{lp.name}"
+                        zipf.write(str(lp), arcname)
+                    except Exception:
+                        # Skip problematic files silently in zip phase
+                        pass
+
+        overall_results["zip_path"] = str(zip_path)
+        overall_results["zip_filename"] = zip_path.name
+        overall_results["zip_temp_dir"] = zip_path.parent.name
+
+        # Cleanup segment directories but keep the zip for download
+        try:
+            if base_dir.exists():
+                shutil.rmtree(base_dir)
+        except Exception:
+            pass
+
+        return overall_results
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to crop data (multi): {str(e)}")
+
+async def crop_video_files(video_links: dict, start_time: float, end_time: float, output_dir: Path, scenario_start_time: Optional[float] = None):
+    """Crop video files based on time range.
+    If scenario_start_time is provided, treat start_time/end_time as absolute (e.g., GPS epoch seconds)
+    and compute relative offsets against the actual video start extracted from filename when possible.
+    Otherwise assume start_time/end_time are already relative to the beginning of the video.
+    """
     results = []
     
     for video_type, s3_url in video_links.items():
@@ -1861,11 +2003,30 @@ async def crop_video_files(video_links: dict, start_time: float, end_time: float
             video_duration = float(duration_result.stdout.strip())
             print(f"📹 {video_type} video duration: {video_duration} seconds")
             
-            # Calculate relative start time (assuming video starts at scenario start)
-            # For now, we'll use the first 15 seconds of the video as a test
-            # In a real implementation, you'd need to map scenario time to video time
-            relative_start = 0  # Start from beginning of video
-            crop_duration = min(15.0, video_duration)  # Crop 15 seconds or full video if shorter
+            # Compute relative start and duration
+            if scenario_start_time is not None:
+                # start_time/end_time given in absolute seconds; align to video start by filename timestamp if available
+                from datetime import datetime
+                import re
+                filename = key.split('/')[-1]
+                match = re.search(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-(front|back|left_repeater|right_repeater)\.mp4$", filename)
+                if match:
+                    try:
+                        video_start_dt = pd.to_datetime(match.group(1), format="%Y-%m-%d_%H-%M-%S", utc=True)
+                        scenario_start_dt = pd.to_datetime(scenario_start_time, unit='s', utc=True)
+                        # relative offset between segment start and video start
+                        segment_start_dt = pd.to_datetime(start_time, unit='s', utc=True)
+                        relative_start = max(0.0, (segment_start_dt - video_start_dt).total_seconds())
+                    except Exception:
+                        relative_start = max(0.0, start_time)
+                else:
+                    # Fallback: assume start_time already relative
+                    relative_start = max(0.0, start_time)
+                crop_duration = max(0.0, min(end_time - start_time, video_duration - relative_start))
+            else:
+                # Assume provided times are relative already
+                relative_start = max(0.0, start_time)
+                crop_duration = max(0.0, min(end_time - start_time, video_duration - relative_start))
             
             print(f"🎬 Cropping {video_type} from {relative_start}s to {relative_start + crop_duration}s")
             
@@ -1873,11 +2034,10 @@ async def crop_video_files(video_links: dict, start_time: float, end_time: float
             output_video = output_dir / f"{video_type}_cropped.mp4"
             
             cmd = [
-                'ffmpeg', '-i', str(temp_video),
-                '-ss', str(relative_start),
+                'ffmpeg', '-ss', str(relative_start), '-i', str(temp_video),
                 '-t', str(crop_duration),
-                '-c', 'copy',  # Copy without re-encoding for speed
-                '-y',  # Overwrite output file
+                '-c', 'copy',
+                '-y',
                 str(output_video)
             ]
             

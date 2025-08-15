@@ -555,6 +555,36 @@
   font-weight: bold;
 }
 
+/* Scenario navigation bar (prev/next + index) */
+.scenario-nav .compact-review-btn {
+  background: #ffffff;
+  border: 1px solid #cbd5df;
+  color: #1e2a36; /* darker text for readability */
+}
+
+.scenario-nav .compact-review-btn:hover:not(:disabled) {
+  background: #f2f5f8;
+  border-color: #aebdcc;
+}
+
+.scenario-nav .compact-review-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.scenario-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #00ff96 0%, #00d4ff 100%);
+  color: #0b2236;
+  font-weight: 700;
+  font-size: 12px;
+}
+
 .scenario-meta {
   display: flex;
   gap: 20px;
@@ -1791,8 +1821,8 @@
 
 .compact-review-btn {
   padding: 6px 12px;
-  background: #3498db;
-  color: white;
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  color: #ffffff;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -1802,7 +1832,7 @@
 }
 
 .compact-review-btn:hover {
-  background: #2980b9;
+  background: linear-gradient(135deg, #2f87c8 0%, #2576a6 100%);
 }
 
 .pagination {
@@ -2284,8 +2314,8 @@
 .mark-btn {
   padding: 8px 16px;
   border: 2px solid #34495e;
-  background: #2c3e50;
-  color: #bdc3c7;
+  background: linear-gradient(135deg, #2c3e50 0%, #273646 100%);
+  color: #e3eaf0;
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
@@ -2307,9 +2337,9 @@
 
 .save-segment-btn {
   padding: 8px 16px;
-  border: 2px solid #e67e22;
-  background: #e67e22;
-  color: white;
+  border: none;
+  background: linear-gradient(135deg, #ffb74d 0%, #fb8c00 100%);
+  color: #1b1b1b;
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
@@ -2318,14 +2348,53 @@
 }
 
 .save-segment-btn:hover:not(:disabled) {
-  background: #d35400;
-  border-color: #d35400;
+  background: linear-gradient(135deg, #ffa726 0%, #ef6c00 100%);
 }
 
 .save-segment-btn:disabled {
   background: #7f8c8d;
-  border-color: #7f8c8d;
   cursor: not-allowed;
+}
+
+/* Pretty select for label */
+.label-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding: 8px 28px 8px 12px;
+  background: #ffffff; /* white base to match dropdown list */
+  color: #1e2a36; /* dark readable text */
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  transition: box-shadow .2s, border-color .2s, transform .05s;
+}
+
+.label-select:hover {
+  border-color: #7d97ad;
+}
+
+.label-select:focus {
+  box-shadow: 0 0 0 3px rgba(125, 151, 173, 0.35);
+  border-color: #7d97ad;
+}
+
+.label-select:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Force dropdown options to be dark text on white background */
+.label-select option {
+  color: #1e2a36;
+  background: #ffffff;
+}
+
+/* Placeholder option */
+.label-select option[value=""] {
+  color: #7a8895;
 }
 
 .marking-status {
@@ -2553,8 +2622,9 @@
   overflow: hidden;
   margin: 0 auto;
   position: relative;
-  top: 50%;
-  transform: translateY(-50%);
+  /* Centering handled by overlay flex; avoid extra vertical offset */
+  top: auto;
+  transform: none;
 }
 
 .modal-header {

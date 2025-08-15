@@ -17,7 +17,9 @@ const ImuVisualization = ({
   setMarkedEndTime,
   selectedTime,
   setSelectedTime,
-  onTimeSync // 新增GPS同步回调
+  onTimeSync, // 新增GPS同步回调
+  segmentLabel,
+  setSegmentLabel
 }) => {
   const rulerRef = useRef(null);
   const [chartData, setChartData] = useState([]);
@@ -181,7 +183,8 @@ const ImuVisualization = ({
       onSaveSegment({
         startTime: markedStartTime,
         endTime: markedEndTime,
-        mode: 'imu'
+        mode: 'imu',
+        label: segmentLabel || null
       });
       setMarkedStartTime(null);
       setMarkedEndTime(null);
@@ -410,6 +413,20 @@ const ImuVisualization = ({
           >
             🎯 Mark End {selectedTime !== null && `(${Math.round(selectedTime)}s)`}
           </button>
+          <select 
+            value={segmentLabel || ''}
+            onChange={(e) => setSegmentLabel(e.target.value)}
+            style={{ padding: '8px 10px', borderRadius: 6 }}
+          >
+            <option value="">Select label...</option>
+            <option value="left_turn">left turn</option>
+            <option value="right_turn">right turn</option>
+            <option value="left_lane_change">left lane change</option>
+            <option value="right_lane_change">right lane change</option>
+            <option value="u_turn">u-turn</option>
+            <option value="harsh_brake">harsh brake</option>
+            <option value="bump">bump</option>
+          </select>
           <button 
             className="save-segment-btn"
             onClick={handleSaveSegment}
