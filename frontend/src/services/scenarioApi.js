@@ -125,17 +125,33 @@ export const extractImuData = async (scenarioId) => {
   }
 };
 
-export const cropDataByTimeRange = async (scenarioId, startTime, endTime, dataLinks) => {
+export const cropDataByTimeRange = async (scenarioId, startTime, endTime, dataLinks, scenarioStartTime) => {
   try {
     const response = await axios.post(`${API_BASE_URL}/api/scenarios/crop-data`, {
       scenario_id: scenarioId,
       start_time: startTime,
       end_time: endTime,
-      data_links: dataLinks
+      data_links: dataLinks,
+      scenario_start_time: scenarioStartTime ?? null
     });
     return response.data;
   } catch (error) {
     console.error('Error cropping data:', error);
+    throw error;
+  }
+};
+
+export const cropDataByTimeRanges = async (scenarioId, segments, dataLinks, scenarioStartTime) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/crop-data-multi`, {
+      scenario_id: scenarioId,
+      segments: segments.map(s => ({ start_time: s.startTime, end_time: s.endTime })),
+      data_links: dataLinks,
+      scenario_start_time: scenarioStartTime ?? null
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error cropping multi-segment data:', error);
     throw error;
   }
 };
