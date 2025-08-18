@@ -132,6 +132,7 @@ job "annotation-platform" {
 
       config {
         image = "${var.ap-backend-image}"
+        ports = ["ap-backend-port"]
       }
 
       resources {
