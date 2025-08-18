@@ -48,6 +48,7 @@ job "annotation-platform" {
 
     service {
       name = "annotation-platform-frontend"
+      port = "ap-frontend-port"
       tags = [
         "envoy.enable=true",
         "envoy.http.enabled=true",
