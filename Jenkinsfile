@@ -54,7 +54,7 @@ pipeline {
             sh """
               cd nomad && nomad job run -detach -region=us-west-2 \
               -var ap-frontend-image=${apFrontendImage.id} \
-              -var ap-backedn-image=${apBackendImage.id} \
+              -var ap-backend-image=${apBackendImage.id} \
               annotation-platform.hcl
             """
         }
