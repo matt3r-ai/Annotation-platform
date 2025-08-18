@@ -42,6 +42,14 @@ job "annotation-platform" {
 
     service {
       name = "annotation-platform-frontend"
+      tags = [
+        "envoy.enable=true",
+        "envoy.http.enabled=true",
+        "envoy.http.vhost=annotation-platform.hyades.matt3r.ai",
+        "envoy.http.domains=annotation-platform.hyades.matt3r.ai",
+        "envoy.http.tls=true",
+        "envoy.http.tls.sni=hyades.matt3r.ai"
+      ]
       connect {
         sidecar_service {
           proxy {
