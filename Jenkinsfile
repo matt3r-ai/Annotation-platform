@@ -47,17 +47,18 @@ pipeline {
       }
     }
 
-//    stage('Deploying to Nomad cluster') {
-//      steps {
-//        script {
-//            echo "Deploying to nomad cluster (staging - processor only)"
-//            sh """
-//              cd nomad && nomad job run -detach -region=us-west-2 \
-//              -var processor-image=${fleetTelemetryProcessorStagingImage.id} \
-//              fleet-telemetry.hcl
-//            """
-//        }
-//      }
-//    }
+    stage('Deploying to Nomad cluster') {
+      steps {
+        script {
+            echo "Deploying to nomad cluster (staging - processor only)"
+            sh """
+              cd nomad && nomad job run -detach -region=us-west-2 \
+              -var ap-frontend-image=${fleetTelemetryProcessorStagingImage.id} \
+              -var ap-backedn-image=${fleetTelemetryProcessorStagingImage.id} \
+              annotation-platform.hcl
+            """
+        }
+      }
+    }
   }
 }
