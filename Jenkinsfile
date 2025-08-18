@@ -53,8 +53,8 @@ pipeline {
             echo "Deploying to nomad cluster (staging - processor only)"
             sh """
               cd nomad && nomad job run -detach -region=us-west-2 \
-              -var ap-frontend-image=${fleetTelemetryProcessorStagingImage.id} \
-              -var ap-backedn-image=${fleetTelemetryProcessorStagingImage.id} \
+              -var ap-frontend-image=${apFrontendImage.id} \
+              -var ap-backedn-image=${apBackendImage.id} \
               annotation-platform.hcl
             """
         }
