@@ -26,6 +26,12 @@ job "annotation-platform" {
   datacenters = ["*"]
   namespace = "${var.nomad-namespace}"
 
+  constraint {
+    attribute = "${node.class}"
+    operator = "regexp"
+    value = "generic"
+  }
+
   group "annotation-platform-frontend" {
 
     count = 1
