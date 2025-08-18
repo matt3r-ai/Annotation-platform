@@ -35,13 +35,21 @@ pipeline {
       }
     }
 
-    stage('Publishing artifacts (annotation-platform)') {
+    stage('Publishing artifacts (annotation-platform-backend)') {
       steps {
         script {
           sh "aws --region us-west-2 ecr get-login-password | docker login --username AWS --password-stdin 963414178352.dkr.ecr.us-west-2.amazonaws.com"
           apBackendImage.push()
-          apFrontendImage.push()
           apBackendImage.push 'latest'
+        }
+      }
+    }
+
+    stage('Publishing artifacts (annotation-platform-frontend)') {
+      steps {
+        script {
+          sh "aws --region us-west-2 ecr get-login-password | docker login --username AWS --password-stdin 963414178352.dkr.ecr.us-west-2.amazonaws.com"
+          apFrontendImage.push()
           apFrontendImage.push 'latest'
         }
       }
