@@ -68,7 +68,6 @@ job "annotation-platform" {
       }
     }
 
-
     task "annotation-platform-frontend" {
       driver = "docker"
 
@@ -110,7 +109,7 @@ job "annotation-platform" {
     }
 
     service {
-      name = "annotation-plarform-backend-connect"
+      name = "annotation-platform-backend-connect"
       port = "8000"
       connect {
         sidecar_service {}
