@@ -671,7 +671,7 @@
   background: #2c3e50;
   border-radius: 6px;
   border: 2px solid #4a5f7a;
-  overflow: hidden;
+  overflow: visible; /* allow activity tooltip to overflow */
   width: 100%;
 }
 
@@ -724,7 +724,7 @@
   font-size: 12px;
   color: white;
   transition: all 0.2s ease;
-  z-index: 10;
+  z-index: 30; /* above the range input */
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
@@ -744,31 +744,46 @@
 }
 
 /* Activity marker tooltip */
-.activity-tooltip {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.95);
-  color: white;
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  white-space: nowrap;
+.activity-tooltip { display: none; }
+
+/* Disable built-in marker tooltip; we use a floating tooltip instead */
+.activity-marker:hover .activity-tooltip {
   opacity: 0;
   visibility: hidden;
-  transition: all 0.3s ease;
-  z-index: 30;
-  margin-bottom: 12px;
-  min-width: 150px;
-  text-align: center;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
 
-.activity-marker:hover .activity-tooltip {
-  opacity: 1;
-  visibility: visible;
+/* Floating tooltip that follows cursor */
+.floating-tooltip {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  background: rgba(0, 0, 0, 0.92);
+  color: #ffffff;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,0.15);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+  z-index: 50;
+  min-width: 120px;
+}
+
+.floating-tooltip .ft-type {
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: #00e0ff;
+}
+
+.floating-tooltip .ft-time {
+  color: #cfd8dc;
+}
+
+.floating-tooltip .ft-conf {
+  color: #2ecc71;
+}
+
+.floating-tooltip .ft-desc {
+  color: #b0bec5;
 }
 
 .activity-type {
@@ -1094,10 +1109,7 @@
   margin-bottom: 8px;
 }
 
-.activity-marker:hover .activity-tooltip {
-  opacity: 1;
-  visibility: visible;
-}
+.activity-marker:hover .activity-tooltip { display: none; }
 
 .activity-type {
   font-weight: bold;
@@ -1940,7 +1952,7 @@
   height: 100%;
   opacity: 0;
   cursor: pointer;
-  z-index: 10;
+  z-index: 1; /* keep below markers so hover works */
 }
 
 .timeline-track {
@@ -1949,6 +1961,7 @@
   background: #2c3e50;
   border-radius: 4px;
   margin: 10px 0;
+  overflow: visible; /* ensure tooltip not clipped in compact variant */
 }
 
 .time-display-unified {
@@ -2273,6 +2286,27 @@
   padding: 8px;
   background: rgba(52, 73, 94, 0.3);
   border-radius: 6px;
+}
+
+.play-toggle-btn {
+  padding: 6px 12px;
+  border: 1px solid #2e6aa1;
+  background: linear-gradient(135deg, #2b5278 0%, #2d3f58 100%);
+  color: #e6f2ff;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 44px;
+}
+
+.play-toggle-btn:hover {
+  background: #345d86;
+}
+
+.play-toggle-btn.playing {
+  background: #8e44ad;
+  border-color: #7d3c98;
 }
 
 .speed-btn-above {
@@ -2793,6 +2827,13 @@
 .write-back-btn:hover {
   background: linear-gradient(135deg, #2980b9 0%, #1f5f8b 100%);
   transform: translateY(-1px);
+}
+
+.write-back-btn:disabled,
+.write-back-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .segment-actions {

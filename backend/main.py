@@ -17,7 +17,7 @@ import uuid
 from scenario_analysis import router as scenario_router
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 使用统一的volume目录结构
+# Unified volume directory for saved videos (container-friendly path)
 STATIC_DIR = "/app/data/saved_video"
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -74,7 +74,7 @@ def load_gps_data(req: GPSLoadRequest):
     file_index = req.file_index or 0
     parquet_keys = s3_manager.list_parquet_keys(org_id, key_id)
     if not parquet_keys or file_index >= len(parquet_keys):
-        return {"points": [], "total_points": 0, "message": "未找到数据文件", "file_index": file_index, "file_count": len(parquet_keys) if parquet_keys else 0}
+        return {"points": [], "total_points": 0, "message": "No data file found", "file_index": file_index, "file_count": len(parquet_keys) if parquet_keys else 0}
     df = s3_manager.load_parquet(parquet_keys[file_index])
     points = [
         {"lat": float(row["lat"]), "lon": float(row["lon"]), "timestamp": row["timestamp"]}
@@ -86,7 +86,7 @@ def load_gps_data(req: GPSLoadRequest):
         "file_index": file_index,
         "file_count": len(parquet_keys),
         "file_name": parquet_keys[file_index],
-        "message": f"成功加载 {len(points)} 个点"
+        "message": f"Successfully loaded {len(points)} points"
     }
 
 class VideoClipRequest(BaseModel):
@@ -207,7 +207,7 @@ def clip_video(req: VideoClipRequest):
     print(f"Received request - preview_mode: {req.preview_mode}")  # Debug info
     # Only one range, as per frontend usage
     timestamp_ranges = [(None, req.start_ts, req.end_ts)]
-    save_dir = "/app/data/saved_video"  # 使用统一的volume目录
+    save_dir = "/app/data/saved_video"  # Unified volume directory
     results = download_and_clip_videos_by_ranges(
         timestamp_ranges,
         s3_bucket="matt3r-driving-footage-us-west-2",  # Use video data bucket
@@ -386,7 +386,7 @@ def download_video_to_local(data: dict):
     if not key:
         return {"success": False, "error": "Missing key"}
     key = unquote(key)
-    local_dir = "/app/data/saved_video"  # 使用统一的volume目录
+    local_dir = "/app/data/saved_video"  # Unified volume directory
     os.makedirs(local_dir, exist_ok=True)
     filename = os.path.basename(key)
     local_path = os.path.join(local_dir, filename)
