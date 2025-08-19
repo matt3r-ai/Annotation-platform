@@ -26,3 +26,7 @@ saved_video/
 
 # Other
 *.swp 
+
+# terraform files
+nomad/terraform/.terraform
+nomad/terraform/.terraform.lock.hcl
