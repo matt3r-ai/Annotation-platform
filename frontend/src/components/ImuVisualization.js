@@ -19,7 +19,8 @@ const ImuVisualization = ({
   setSelectedTime,
   onTimeSync, // 新增GPS同步回调
   segmentLabel,
-  setSegmentLabel
+  setSegmentLabel,
+  renderNavigation
 }) => {
   const rulerRef = useRef(null);
   const [chartData, setChartData] = useState([]);
@@ -395,6 +396,12 @@ const ImuVisualization = ({
           </div>
         </div>
       </div>
+      {/* Inject navigation (Previous/Next) right below timeline */}
+      {typeof renderNavigation === 'function' && (
+        <div style={{marginTop: 8}}>
+          {renderNavigation()}
+        </div>
+      )}
       
       {/* Marking Controls */}
       <div className="imu-marking-controls">

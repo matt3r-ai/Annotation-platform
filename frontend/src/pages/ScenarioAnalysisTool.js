@@ -53,6 +53,56 @@ const ScenarioAnalysisTool = () => {
   const [segmentStart, setSegmentStart] = useState(0);
   const [segmentEnd, setSegmentEnd] = useState(0);
   const videoRef = useRef(null);
+  const timelineTrackRef = useRef(null);
+  const [eventTooltip, setEventTooltip] = useState({
+    visible: false,
+    left: 0,
+    top: 0,
+    type: '',
+    time: 0,
+    desc: '',
+    conf: null
+  });
+
+  const showEventTooltip = (activity, e) => {
+    const rect = timelineTrackRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setEventTooltip({
+      visible: true,
+      left: Math.max(0, Math.min(e.clientX - rect.left + 12, rect.width - 10)),
+      top: Math.max(0, e.clientY - rect.top - 16),
+      type: activity.type || 'event',
+      time: activity.timestamp || 0,
+      desc: activity.description || '',
+      conf: typeof activity.confidence === 'number' ? activity.confidence : null
+    });
+  };
+
+  const moveEventTooltip = (e) => {
+    const rect = timelineTrackRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setEventTooltip(t => t.visible ? {
+      ...t,
+      left: Math.max(0, Math.min(e.clientX - rect.left + 12, rect.width - 10)),
+      top: Math.max(0, e.clientY - rect.top - 16)
+    } : t);
+  };
+
+  const hideEventTooltip = () => {
+    setEventTooltip(t => ({ ...t, visible: false }));
+  };
+
+  const togglePlayPause = () => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.paused) {
+      el.play();
+      setIsPlaying(true);
+    } else {
+      el.pause();
+      setIsPlaying(false);
+    }
+  };
 
   // New labeling functionality - shared between video, GPS, and IMU modes
   const [markedStartTime, setMarkedStartTime] = useState(null);
@@ -1445,31 +1495,8 @@ const ScenarioAnalysisTool = () => {
           <div className="scenario-info">
             <h3>📹 Reviewing Scenario #{currentScenario.id}</h3>
             {/* Navigation between scenarios */}
-            {scenarios && scenarios.length > 0 && (
-              (() => {
-                const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
-                const total = scenarios.length;
-                return (
-                  <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}>
-                    <button 
-                      className="compact-review-btn"
-                      onClick={handlePrevScenario}
-                      disabled={loading || currentIndex <= 0}
-                    >
-                      ← Previous
-                    </button>
-                    <span className="scenario-index">{currentIndex + 1} / {total}</span>
-                    <button 
-                      className="compact-review-btn"
-                      onClick={handleNextScenario}
-                      disabled={loading || currentIndex >= total - 1}
-                    >
-                      Next →
-                    </button>
-                  </div>
-                );
-              })()
-            )}
+            {/* Moved navigation below visualizations; keep index badge here only */}
+            {/* removed inline index badge at top to avoid duplication */}
             <div className="scenario-meta">
               <span className="meta-item">
                 <span className="meta-icon">{getEventTypeIcon(currentScenario.event_type)}</span>
@@ -1541,6 +1568,13 @@ const ScenarioAnalysisTool = () => {
                   </video>
                 </div>
                 <div className="speed-controls-above-timeline">
+                  <button
+                    className={`play-toggle-btn ${isPlaying ? 'playing' : ''}`}
+                    onClick={togglePlayPause}
+                    title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+                  >
+                    {isPlaying ? '⏸︎' : '▶︎'}
+                  </button>
                   {[0.5, 1, 2, 3].map(rate => (
                     <button
                       key={rate}
@@ -1556,7 +1590,7 @@ const ScenarioAnalysisTool = () => {
                     <span className="timeline-title">Activity Timeline</span>
                     <span className="timeline-count">{activities.length} activities</span>
                   </div>
-                  <div className="timeline-track">
+                  <div className="timeline-track" ref={timelineTrackRef}>
                     <div className="timeline-ticks">
                       {videoDuration > 0 && Array.from({ length: Math.floor(videoDuration / 10) + 1 }, (_, i) => (
                         <div 
@@ -1575,7 +1609,9 @@ const ScenarioAnalysisTool = () => {
                         style={{
                           left: videoDuration > 0 ? `${(activity.timestamp / videoDuration) * 100}%` : '0%'
                         }}
-                        title={`${activity.type}: ${activity.description} (${formatTime(activity.timestamp)})`}
+                        onMouseEnter={(e) => showEventTooltip(activity, e)}
+                        onMouseMove={moveEventTooltip}
+                        onMouseLeave={hideEventTooltip}
                         onClick={() => handleSeek(activity.timestamp)}
                       >
                         <span className="activity-icon">{getActivityIcon(activity.type)}</span>
@@ -1586,6 +1622,22 @@ const ScenarioAnalysisTool = () => {
                         </div>
                       </div>
                     ))}
+
+                    {eventTooltip.visible && (
+                      <div
+                        className="floating-tooltip"
+                        style={{ left: eventTooltip.left, top: eventTooltip.top }}
+                      >
+                        <div className="ft-type">{(eventTooltip.type || '').toUpperCase()}</div>
+                        <div className="ft-time">{formatTime(eventTooltip.time)}</div>
+                        {eventTooltip.conf !== null && (
+                          <div className="ft-conf">Conf: {Math.round(eventTooltip.conf * 100)}%</div>
+                        )}
+                        {eventTooltip.desc && (
+                          <div className="ft-desc">{eventTooltip.desc}</div>
+                        )}
+                      </div>
+                    )}
                     
                     {/* IMU Shared Markers */}
                     {markedStartTime !== null && (
@@ -1641,6 +1693,31 @@ const ScenarioAnalysisTool = () => {
                     {formatTime(currentTime)} / {formatTime(videoDuration)}
                   </div>
                 </div>
+
+                {/* Scenario navigation placed directly below visualizations */}
+                {scenarios && scenarios.length > 0 && (() => {
+                  const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
+                  const total = scenarios.length;
+                  return (
+                    <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center',marginTop:12}}>
+                      <button 
+                        className="compact-review-btn"
+                        onClick={handlePrevScenario}
+                        disabled={loading || currentIndex <= 0}
+                      >
+                        ← Previous
+                      </button>
+                      <span className="scenario-index">{currentIndex + 1} / {total}</span>
+                      <button 
+                        className="compact-review-btn"
+                        onClick={handleNextScenario}
+                        disabled={loading || currentIndex >= total - 1}
+                      >
+                        Next →
+                      </button>
+                    </div>
+                  );
+                })()}
                 <div className="video-controls-compact">
                   <div className="labeling-controls">
                     <div className="marking-buttons">
@@ -1756,6 +1833,8 @@ const ScenarioAnalysisTool = () => {
                           <button 
                             className="write-back-btn"
                             onClick={writeAnnotationsToDb}
+                            disabled
+                            title="Temporarily disabled"
                           >
                             💾 Write Back
                           </button>
@@ -1867,6 +1946,18 @@ const ScenarioAnalysisTool = () => {
                     </div>
                   )}
                 </div>
+                {/* Scenario navigation below placeholder as well */}
+                {scenarios && scenarios.length > 0 && (() => {
+                  const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
+                  const total = scenarios.length;
+                  return (
+                    <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center',marginTop:12}}>
+                      <button className="compact-review-btn" onClick={handlePrevScenario} disabled={loading || currentIndex <= 0}>← Previous</button>
+                      <span className="scenario-index">{currentIndex + 1} / {total}</span>
+                      <button className="compact-review-btn" onClick={handleNextScenario} disabled={loading || currentIndex >= total - 1}>Next →</button>
+                    </div>
+                  );
+                })()}
               </div>
             )
           ) : viewMode === 'imu' ? (
@@ -1879,6 +1970,7 @@ const ScenarioAnalysisTool = () => {
                 </div>
               </div>
             ) : (
+              <>
               <ImuVisualization
                 imuData={imuData}
                 savedSegments={savedSegments}
@@ -1943,7 +2035,19 @@ const ScenarioAnalysisTool = () => {
                 setMarkedEndTime={setMarkedEndTime}
                 selectedTime={selectedTime}
                 setSelectedTime={setSelectedTime}
+                renderNavigation={() => {
+                  const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
+                  const total = scenarios.length;
+                  return (
+                    <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center'}}>
+                      <button className="compact-review-btn" onClick={handlePrevScenario} disabled={loading || currentIndex <= 0}>← Previous</button>
+                      <span className="scenario-index">{currentIndex + 1} / {total}</span>
+                      <button className="compact-review-btn" onClick={handleNextScenario} disabled={loading || currentIndex >= total - 1}>Next →</button>
+                    </div>
+                  );
+                }}
               />
+              </>
             )
           ) : (
             // GPS Mode
@@ -2087,7 +2191,19 @@ const ScenarioAnalysisTool = () => {
                     <FitBoundsOnPoints points={gpsPoints} />
                   </MapContainer>
                 </div>
-                
+                {/* GPS navigation */}
+                {scenarios && scenarios.length > 0 && (() => {
+                  const currentIndex = scenarios.findIndex(s => s.id === (currentScenario ? currentScenario.id : null));
+                  const total = scenarios.length;
+                  return (
+                    <div className="scenario-nav" style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center',marginTop:12}}>
+                      <button className="compact-review-btn" onClick={handlePrevScenario} disabled={loading || currentIndex <= 0}>← Previous</button>
+                      <span className="scenario-index">{currentIndex + 1} / {total}</span>
+                      <button className="compact-review-btn" onClick={handleNextScenario} disabled={loading || currentIndex >= total - 1}>Next →</button>
+                    </div>
+                  );
+                })()}
+
                 <div className="gps-controls-compact">
                   <div className="gps-labeling-controls">
                     <div className="gps-marking-buttons">
@@ -2186,6 +2302,8 @@ const ScenarioAnalysisTool = () => {
                           <button 
                             className="write-back-btn"
                             onClick={writeAnnotationsToDb}
+                            disabled
+                            title="Temporarily disabled"
                           >
                             💾 Write Back
                           </button>
