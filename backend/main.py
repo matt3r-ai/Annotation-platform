@@ -14,8 +14,11 @@ import tempfile
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import unquote
 import uuid
+from dotenv import load_dotenv
+load_dotenv()
 from scenario_analysis import router as scenario_router
-
+from dotenv import load_dotenv
+load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Unified volume directory for saved videos (container-friendly path)
 STATIC_DIR = "/app/data/saved_video"
