@@ -194,4 +194,20 @@ export const downloadCroppedData = async (zipFilename) => {
   }
 };
 
+// === Auto description (Gemini/VLM) ===
+export const autoDescribeSegment = async (scenarioId, startTime, endTime, context) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/auto-describe`, {
+      scenario_id: scenarioId,
+      start_time: startTime,
+      end_time: endTime,
+      context: context || null,
+    });
+    return response.data; // { text }
+  } catch (error) {
+    console.error('Error auto-describing segment:', error);
+    throw error;
+  }
+};
+
  
