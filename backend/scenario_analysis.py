@@ -1686,6 +1686,119 @@ class CropSegmentsRequest(BaseModel):
     # Optional: absolute start time of the scenario/video timeline (epoch seconds)
     scenario_start_time: Optional[float] = None
 
+
+# === VLM/Gemini description generation ===
+class AutoDescribeRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    # Optional context text to improve generation
+    context: Optional[str] = None
+
+class AutoDescribeResponse(BaseModel):
+    text: str
+
+def _generate_description_with_gemini(prompt: str) -> str:
+    """Call Gemini (or other VLM) to generate a description text.
+    This uses google-generativeai as an example. Requires env var GOOGLE_API_KEY.
+    """
+    try:
+        import os
+        import google.generativeai as genai
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            # Fallback dummy text when key is not set
+            return "Automatic summary: " + prompt[:120]
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        res = model.generate_content(prompt)
+        return (res.text or "").strip() if res else ""
+    except Exception as e:
+        return f"Automatic summary unavailable: {e}"
+
+@router.post("/auto-describe", response_model=AutoDescribeResponse)
+async def auto_describe(req: AutoDescribeRequest) -> AutoDescribeResponse:
+    """Generate a short description for a selected time range.
+
+    The current implementation does not extract video frames; it composes a
+    concise prompt using the time range, scenario id and optional context, and
+    calls Gemini for text-only generation. You can later extend this to send
+    video frames or keyframes to a VLM for richer results.
+    """
+    try:
+        duration = max(0.0, req.end_time - req.start_time)
+        base_prompt = (
+            "You are describing a short driving video segment for annotation.\n"
+            "Follow these strict rules:\n"
+            "- Use ONLY the provided times and context; do not invent details.\n"
+            "- If context lists events, mention them; if events=[none], explicitly state no significant events.\n"
+            "- Avoid generic phrases like 'smoothly navigates a curve' unless context indicates a turn.\n"
+            "- If label or context suggests 'stop/stopped/parking/idle', prefer stationary phrasing.\n"
+            "- Keep it to 1–2 short sentences.\n"
+            f"Scenario ID: {req.scenario_id}.\n"
+            f"Segment start: {req.start_time:.2f}s, end: {req.end_time:.2f}s, duration: {duration:.2f}s.\n"
+        )
+        # Optional: enrich with telemetry (avg speed) by reading console_trip around the window
+        telemetry_context = ""
+        try:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT data_links, start_time FROM public.dmp WHERE id = %s", (req.scenario_id,))
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+                if row:
+                    data_links, scenario_start = row
+                    console_trip_url = None
+                    if isinstance(data_links, dict):
+                        console_trip_url = data_links.get("trip", {}).get("console_trip")
+                    if console_trip_url and scenario_start is not None:
+                        # Compute absolute timestamps for the selection window
+                        abs_start = float(scenario_start) + float(req.start_time)
+                        abs_end = float(scenario_start) + float(req.end_time)
+                        # Load parquet and compute average speed in window
+                        import s3fs
+                        import pandas as pd
+                        fs = s3fs.S3FileSystem()
+                        df = pd.read_parquet(console_trip_url, filesystem=fs)
+                        ts_col = None
+                        for col in df.columns:
+                            if str(col).lower() in ("timestamp",) or any(k in str(col).lower() for k in ["timestamp", "time", "ts"]):
+                                ts_col = col
+                                break
+                        if ts_col is not None:
+                            # ensure numeric
+                            if df[ts_col].dtype == object:
+                                df[ts_col] = pd.to_numeric(df[ts_col], errors='coerce')
+                            window = df[(df[ts_col] >= abs_start) & (df[ts_col] <= abs_end)].copy()
+                            speed_col = None
+                            for col in window.columns:
+                                if "speed" in str(col).lower():
+                                    speed_col = col
+                                    break
+                            if speed_col is not None and len(window) > 0:
+                                try:
+                                    avg_speed = float(window[speed_col].astype(float).mean())
+                                    telemetry_context = f"telemetry: avg_speed={avg_speed:.2f} (units as stored), samples={len(window)}"
+                                except Exception:
+                                    pass
+        except Exception:
+            # Non-fatal; continue without telemetry
+            pass
+
+        if req.context or telemetry_context:
+            merged_context = "; ".join([c for c in [req.context or "", telemetry_context] if c])
+            base_prompt += f"Context: {merged_context}\n"
+        base_prompt += ("Now output the description only, without prefixes.")
+
+        text = _generate_description_with_gemini(base_prompt)
+        if not text:
+            text = "Automatic summary could not be generated."
+        return AutoDescribeResponse(text=text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"auto-describe failed: {e}")
+
 @router.post("/crop-data")
 async def crop_data_by_time_range(request: CropDataRequest):
     """
