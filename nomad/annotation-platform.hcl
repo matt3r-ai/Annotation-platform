@@ -130,6 +130,14 @@ job "annotation-platform" {
 
       vault {}
 
+      template {
+        data = <<EOH
+GOOGLE_API_KEY = {{with secret "kv_hyades/data/nomad/jobs/annotation-plaltform/google"}}{{.Data.data.google_api_key}}{{end}}
+EOH
+        destination = "local/secrets/annotation-platform.env"
+        env = true
+      }
+
       config {
         image = "${var.ap-backend-image}"
         ports = ["ap-backend-port"]
