@@ -54,6 +54,7 @@ const ScenarioAnalysisTool = () => {
   const [segmentEnd, setSegmentEnd] = useState(0);
   const videoRef = useRef(null);
   const timelineTrackRef = useRef(null);
+  const [loopSegment, setLoopSegment] = useState(false);
   const [eventTooltip, setEventTooltip] = useState({
     visible: false,
     left: 0,
@@ -665,7 +666,26 @@ const ScenarioAnalysisTool = () => {
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
+      const t = videoRef.current.currentTime;
+      setCurrentTime(t);
+      if (
+        loopSegment &&
+        markedStartTime !== null &&
+        markedEndTime !== null &&
+        markedEndTime > markedStartTime
+      ) {
+        if (t < markedStartTime) {
+          videoRef.current.currentTime = markedStartTime;
+        } else if (t >= markedEndTime) {
+          // Loop back to segment start
+          videoRef.current.currentTime = markedStartTime;
+          // Keep playing if user was playing
+          if (!videoRef.current.paused) {
+            const p = videoRef.current.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          }
+        }
+      }
     }
   };
 
@@ -688,6 +708,13 @@ const ScenarioAnalysisTool = () => {
       videoRef.current.playbackRate = rate;
     }
   };
+
+  // Turn off loop if selection is cleared
+  useEffect(() => {
+    if (markedStartTime === null || markedEndTime === null) {
+      if (loopSegment) setLoopSegment(false);
+    }
+  }, [markedStartTime, markedEndTime]);
 
   // New labeling functions
   const handleMarkStart = () => {
@@ -1572,6 +1599,14 @@ const ScenarioAnalysisTool = () => {
                   >
                     {isPlaying ? '⏸︎' : '▶︎'}
                   </button>
+                  <button
+                    className={`speed-btn-above ${loopSegment ? 'active' : ''}`}
+                    onClick={() => setLoopSegment(v => !v)}
+                    title={markedStartTime !== null && markedEndTime !== null ? `Loop ${formatTime(markedStartTime)} - ${formatTime(markedEndTime)}` : 'Select a range to loop'}
+                    disabled={markedStartTime === null || markedEndTime === null || markedEndTime <= markedStartTime}
+                  >
+                    🔁 Loop
+                  </button>
                   {[0.5, 1, 2, 3].map(rate => (
                     <button
                       key={rate}
@@ -1871,12 +1906,40 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Write Back
                           </button>
-                          <button 
-                            className="save-file-btn"
-                            onClick={handleSaveToFile}
-                          >
-                            💾 Save File
-                          </button>
+                          <div className="save-dropdown" style={{display:'inline-flex', gap:8, alignItems:'center'}}>
+                            <select id="save-format-select" defaultValue="csv" style={{padding:'6px 8px', borderRadius:6}}>
+                              <option value="csv">CSV</option>
+                              <option value="npz">NPZ</option>
+                            </select>
+                            <button 
+                              className="save-file-btn"
+                              onClick={async () => {
+                                const fmt = document.getElementById('save-format-select')?.value || 'csv';
+                                if (fmt === 'csv') {
+                                  handleSaveToFile();
+                                } else {
+                                  try {
+                                    const first = savedSegments[0];
+                                    if (!first) { alert('No segments to save!'); return; }
+                                    const { saveSegmentAsNpz } = await import('../services/scenarioApi');
+                                    await saveSegmentAsNpz({
+                                      scenarioId: first.scenario?.id,
+                                      startTime: first.startTime,
+                                      endTime: first.endTime,
+                                      label: first.label || '',
+                                      description: first.description || '',
+                                      dataLinks: first.scenario?.data_links || {},
+                                    });
+                                  } catch (e) {
+                                    console.error(e);
+                                    alert('Failed to save NPZ');
+                                  }
+                                }
+                              }}
+                            >
+                              💾 Save
+                            </button>
+                          </div>
                   <button 
                     className="save-file-btn"
                     onClick={() => {
@@ -2340,12 +2403,40 @@ const ScenarioAnalysisTool = () => {
                           >
                             💾 Write Back
                           </button>
-                          <button 
-                            className="save-file-btn"
-                            onClick={handleSaveToFile}
-                          >
-                            💾 Save File
-                          </button>
+                          <div className="save-dropdown" style={{display:'inline-flex', gap:8, alignItems:'center'}}>
+                            <select id="save-format-select-bottom" defaultValue="csv" style={{padding:'6px 8px', borderRadius:6}}>
+                              <option value="csv">CSV</option>
+                              <option value="npz">NPZ</option>
+                            </select>
+                            <button 
+                              className="save-file-btn"
+                              onClick={async () => {
+                                const fmt = document.getElementById('save-format-select-bottom')?.value || 'csv';
+                                if (fmt === 'csv') {
+                                  handleSaveToFile();
+                                } else {
+                                  try {
+                                    const first = savedSegments[0];
+                                    if (!first) { alert('No segments to save!'); return; }
+                                    const { saveSegmentAsNpz } = await import('../services/scenarioApi');
+                                    await saveSegmentAsNpz({
+                                      scenarioId: first.scenario?.id,
+                                      startTime: first.startTime,
+                                      endTime: first.endTime,
+                                      label: first.label || '',
+                                      description: first.description || '',
+                                      dataLinks: first.scenario?.data_links || {},
+                                    });
+                                  } catch (e) {
+                                    console.error(e);
+                                    alert('Failed to save NPZ');
+                                  }
+                                }
+                              }}
+                            >
+                              💾 Save
+                            </button>
+                          </div>
                   <button 
                     className="save-file-btn"
                     onClick={() => {
