@@ -90,6 +90,21 @@ const HomePage = () => {
                 </button>
               </div>
 
+              {/* Video2Everything */}
+              <div className="tool-card active">
+                <div className="tool-icon">🎞️</div>
+                <h3 className="tool-title">Video2Everything</h3>
+                <p className="tool-description">
+                  One video in, multi-task outputs aggregated on a single page.
+                </p>
+                <button 
+                  className="tool-button"
+                  onClick={() => handleToolClick('/video2everything')}
+                >
+                  Launch Tool
+                </button>
+              </div>
+
               {/* Lane Follow Detection */}
               <div className="tool-card">
                 <div className="tool-icon">🛣️</div>
