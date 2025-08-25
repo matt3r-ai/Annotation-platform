@@ -12,6 +12,8 @@ from pathlib import Path
 import pandas as pd
 from fastapi.responses import FileResponse
 import zipfile
+from fastapi import Response
+from io import BytesIO
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
@@ -1685,6 +1687,324 @@ class CropSegmentsRequest(BaseModel):
     data_links: dict
     # Optional: absolute start time of the scenario/video timeline (epoch seconds)
     scenario_start_time: Optional[float] = None
+
+
+# === VLM/Gemini description generation ===
+class AutoDescribeRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    # Optional context text to improve generation
+    context: Optional[str] = None
+
+class AutoDescribeResponse(BaseModel):
+    text: str
+
+def _generate_description_with_gemini(prompt: str) -> str:
+    """Call Gemini (or other VLM) to generate a description text.
+    This uses google-generativeai as an example. Requires env var GOOGLE_API_KEY.
+    """
+    try:
+        import os
+        import google.generativeai as genai
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            # Fallback dummy text when key is not set
+            return "Automatic summary: " + prompt[:120]
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        res = model.generate_content(prompt)
+        return (res.text or "").strip() if res else ""
+    except Exception as e:
+        return f"Automatic summary unavailable: {e}"
+
+@router.post("/auto-describe", response_model=AutoDescribeResponse)
+async def auto_describe(req: AutoDescribeRequest) -> AutoDescribeResponse:
+    """Generate a short description for a selected time range.
+
+    The current implementation does not extract video frames; it composes a
+    concise prompt using the time range, scenario id and optional context, and
+    calls Gemini for text-only generation. You can later extend this to send
+    video frames or keyframes to a VLM for richer results.
+    """
+    try:
+        duration = max(0.0, req.end_time - req.start_time)
+        base_prompt = (
+            "You are describing a short driving video segment for annotation.\n"
+            "Follow these strict rules:\n"
+            "- Use ONLY the provided times and context; do not invent details.\n"
+            "- If context lists events, mention them; if events=[none], explicitly state no significant events.\n"
+            "- Avoid generic phrases like 'smoothly navigates a curve' unless context indicates a turn.\n"
+            "- If label or context suggests 'stop/stopped/parking/idle', prefer stationary phrasing.\n"
+            "- Keep it to 1–2 short sentences.\n"
+            f"Scenario ID: {req.scenario_id}.\n"
+            f"Segment start: {req.start_time:.2f}s, end: {req.end_time:.2f}s, duration: {duration:.2f}s.\n"
+        )
+        # Optional: enrich with telemetry (avg speed) by reading console_trip around the window
+        telemetry_context = ""
+        try:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT data_links, start_time FROM public.dmp WHERE id = %s", (req.scenario_id,))
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+                if row:
+                    data_links, scenario_start = row
+                    console_trip_url = None
+                    if isinstance(data_links, dict):
+                        console_trip_url = data_links.get("trip", {}).get("console_trip")
+                    if console_trip_url and scenario_start is not None:
+                        # Compute absolute timestamps for the selection window
+                        abs_start = float(scenario_start) + float(req.start_time)
+                        abs_end = float(scenario_start) + float(req.end_time)
+                        # Load parquet and compute average speed in window
+                        import s3fs
+                        import pandas as pd
+                        fs = s3fs.S3FileSystem()
+                        df = pd.read_parquet(console_trip_url, filesystem=fs)
+                        ts_col = None
+                        for col in df.columns:
+                            if str(col).lower() in ("timestamp",) or any(k in str(col).lower() for k in ["timestamp", "time", "ts"]):
+                                ts_col = col
+                                break
+                        if ts_col is not None:
+                            # ensure numeric
+                            if df[ts_col].dtype == object:
+                                df[ts_col] = pd.to_numeric(df[ts_col], errors='coerce')
+                            window = df[(df[ts_col] >= abs_start) & (df[ts_col] <= abs_end)].copy()
+                            speed_col = None
+                            for col in window.columns:
+                                if "speed" in str(col).lower():
+                                    speed_col = col
+                                    break
+                            if speed_col is not None and len(window) > 0:
+                                try:
+                                    avg_speed = float(window[speed_col].astype(float).mean())
+                                    telemetry_context = f"telemetry: avg_speed={avg_speed:.2f} (units as stored), samples={len(window)}"
+                                except Exception:
+                                    pass
+        except Exception:
+            # Non-fatal; continue without telemetry
+            pass
+
+        if req.context or telemetry_context:
+            merged_context = "; ".join([c for c in [req.context or "", telemetry_context] if c])
+            base_prompt += f"Context: {merged_context}\n"
+        base_prompt += ("Now output the description only, without prefixes.")
+
+        text = _generate_description_with_gemini(base_prompt)
+        if not text:
+            text = "Automatic summary could not be generated."
+        return AutoDescribeResponse(text=text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"auto-describe failed: {e}")
+
+# === Save segment as NPZ ===
+class SaveNpzRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    label: Optional[str] = None
+    description: Optional[str] = None
+    data_links: dict
+
+@router.post("/save-npz")
+async def save_segment_as_npz(req: SaveNpzRequest):
+    """Create a NumPy .npz file with our schema.
+
+    Arrays in the archive:
+    - maneuver_type: 0-D unicode string (e.g., "right-lane-change")
+    - start: 0-D float64 (epoch seconds, segment start)
+    - end: 0-D float64 (epoch seconds, segment end)
+    - imu_data: 0-D object → a dict of plain Python lists
+    - gps_data: 0-D object → a dict of plain Python lists
+    - metadata: 0-D object → a dict with strings/URIs (also包含字符串格式 start/end)
+    """
+    try:
+        # 1) Fetch basic identifiers (org_id, key_id, vin)
+        conn = get_db_connection()
+        org_id = None
+        key_id = None
+        vin = None
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT org_id, key_id, vin FROM public.dmp WHERE id = %s", (req.scenario_id,))
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                org_id, key_id, vin = row
+
+        # 2) Resolve URIs from data_links
+        imu_accel_uri = None
+        imu_gyro_uri = None
+        gps_uri = None
+        video_uri_list = []
+        if isinstance(req.data_links, dict):
+            imu_links = req.data_links.get("imu") or {}
+            if isinstance(imu_links, dict):
+                imu_accel_uri = imu_links.get("accel")
+                imu_gyro_uri = imu_links.get("gyro")
+            trip_links = req.data_links.get("trip") or {}
+            if isinstance(trip_links, dict):
+                gps_uri = trip_links.get("console_trip") or trip_links.get("fleet_trip")
+            video_links = req.data_links.get("video") or {}
+            if isinstance(video_links, dict):
+                for _, v in video_links.items():
+                    if v:
+                        video_uri_list.append(v)
+
+        # 3) Format start/end as strings and compute maneuver_time (midpoint)
+        try:
+            start_fmt = pd.to_datetime(req.start_time, unit='s', utc=True).tz_convert('UTC').strftime('%Y-%m-%d_%H-%M-%S')
+        except Exception:
+            start_fmt = str(req.start_time)
+        try:
+            end_fmt = pd.to_datetime(req.end_time, unit='s', utc=True).tz_convert('UTC').strftime('%Y-%m-%d_%H-%M-%S')
+        except Exception:
+            end_fmt = str(req.end_time)
+        start_epoch = float(req.start_time)
+        end_epoch = float(req.end_time)
+        maneuver_type = (req.label or 'maneuver').strip().replace(' ', '-').lower()
+
+        # 4) Collect IMU arrays (best-effort; empty if unavailable)
+        import numpy as np
+        def to_array(lst, key, dtype=float):
+            try:
+                return np.array([float(p.get(key, 0)) for p in lst], dtype=dtype)
+            except Exception:
+                return np.array([], dtype=dtype)
+
+        lr_acc = np.array([]); bf_acc = np.array([]); vert_acc = np.array([])
+        lr_w = np.array([]); bf_w = np.array([]); vert_w = np.array([])
+        imu_ts = np.array([])
+        try:
+            if imu_accel_uri:
+                accel_points = load_imu_data_from_s3(imu_accel_uri)  # list of {timestamp,x,y,z}
+                # Crop by selected time window
+                accel_points = [p for p in accel_points if start_epoch <= float(p.get('timestamp', 0)) <= end_epoch]
+                if accel_points:
+                    imu_ts = to_array(accel_points, 'timestamp')
+                    lr_acc = to_array(accel_points, 'x')
+                    bf_acc = to_array(accel_points, 'y')
+                    vert_acc = to_array(accel_points, 'z')
+        except Exception:
+            pass
+        try:
+            if imu_gyro_uri:
+                gyro_points = load_imu_data_from_s3(imu_gyro_uri)
+                # Crop by selected time window
+                gyro_points = [p for p in gyro_points if start_epoch <= float(p.get('timestamp', 0)) <= end_epoch]
+                if gyro_points and imu_ts.size == 0:
+                    imu_ts = to_array(gyro_points, 'timestamp')
+                if gyro_points:
+                    lr_w = to_array(gyro_points, 'x')
+                    bf_w = to_array(gyro_points, 'y')
+                    vert_w = to_array(gyro_points, 'z')
+        except Exception:
+            pass
+
+        # Align lengths rudimentarily to the smallest non-zero length
+        lengths = [arr.size for arr in [imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w] if arr.size > 0]
+        if lengths:
+            n = min(lengths)
+            def trim(a):
+                return a[:n] if a.size >= n and n > 0 else a
+            imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w = [trim(a) for a in [imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w]]
+
+        # Convert to plain Python lists to avoid pickling NumPy internals
+        imu_obj = {
+            'timestamp': imu_ts.tolist(),
+            'lr_acc': lr_acc.tolist(), 'bf_acc': bf_acc.tolist(), 'vert_acc': vert_acc.tolist(),
+            'lr_w': lr_w.tolist(), 'bf_w': bf_w.tolist(), 'vert_w': vert_w.tolist(),
+        }
+
+        # 5) Collect GPS arrays (best-effort)
+        gps_obj = { 'timestamp': [],
+                    'latitude': [],
+                    'longitude': [],
+                    'speed': [],
+                    'course': [] }
+        try:
+            if gps_uri and gps_uri.startswith('s3://'):
+                # Use S3ParquetManager for convenience
+                from s3_utils import S3ParquetManager
+                parts = gps_uri.replace('s3://','').split('/',1)
+                if len(parts) == 2:
+                    bucket, key = parts
+                    s3mgr = S3ParquetManager(bucket)
+                    df = s3mgr.load_parquet(key)
+                    # Identify columns
+                    ts_col = None; lat_col=None; lon_col=None; spd_col=None; crs_col=None
+                    for c in df.columns:
+                        lc = str(c).lower()
+                        if ts_col is None and any(k in lc for k in ['timestamp','time','ts']): ts_col=c
+                        if lat_col is None and 'lat' in lc: lat_col=c
+                        if lon_col is None and ('lon' in lc or 'lng' in lc): lon_col=c
+                        if spd_col is None and 'speed' in lc: spd_col=c
+                        if crs_col is None and ('course' in lc or 'heading' in lc or 'yaw' in lc): crs_col=c
+                    if ts_col is not None:
+                        # Crop by selected time window
+                        ts_series = pd.to_numeric(df[ts_col], errors='coerce').astype(float)
+                        window = df[(ts_series >= start_epoch) & (ts_series <= end_epoch)].copy()
+                        ts_vals = ts_series[(ts_series >= start_epoch) & (ts_series <= end_epoch)].tolist()
+                        gps_obj['timestamp'] = ts_vals
+                    else:
+                        window = df
+                    if lat_col is not None:
+                        gps_obj['latitude'] = window[lat_col].astype(str).tolist()
+                    if lon_col is not None:
+                        gps_obj['longitude'] = window[lon_col].astype(str).tolist()
+                    if spd_col is not None:
+                        gps_obj['speed'] = pd.to_numeric(window[spd_col], errors='coerce').astype(float).tolist()
+                    if crs_col is not None:
+                        gps_obj['course'] = pd.to_numeric(window[crs_col], errors='coerce').astype(float).tolist()
+        except Exception:
+            pass
+
+        # 6) Compose metadata dictionary
+        metadata = {
+            'imu_org_id': org_id or '',
+            'imu_k3y_id': key_id or '',
+            'tesla_org_id': org_id or '',
+            'tesla_vehicle_id': vin,
+            'gps_source': 'console_trip' if gps_uri else '',
+            'start': start_fmt,
+            'end': end_fmt,
+            'imu_accel_uri': imu_accel_uri or '',
+            'imu_gyro_uri': imu_gyro_uri or '',
+            'gps_uri': gps_uri or '',
+            'video_uri': list(video_uri_list),
+            'notes': (req.description or ''),
+            'location': '',
+        }
+
+        # 7) Build NPZ payload in the requested structure
+        import numpy as np
+        def box0(obj):
+            arr = np.empty((), dtype=object)
+            arr[()] = obj
+            return arr
+        payload = {
+            'maneuver_type': np.array(maneuver_type),
+            'maneuver_time': box0({'start': float(start_epoch), 'end': float(end_epoch)}),
+            'imu_data': box0(imu_obj),
+            'gps_data': box0(gps_obj),
+            'metadata': box0(metadata),
+        }
+
+        # 8) Save to buffer and return
+        buffer = BytesIO()
+        np.savez_compressed(buffer, **payload)
+        buffer.seek(0)
+
+        filename = f"segment_{req.scenario_id}_{start_fmt}_{end_fmt}.npz"
+        headers = { 'Content-Disposition': f'attachment; filename="{filename}"' }
+        return Response(content=buffer.read(), media_type='application/octet-stream', headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"save-npz failed: {e}")
 
 @router.post("/crop-data")
 async def crop_data_by_time_range(request: CropDataRequest):

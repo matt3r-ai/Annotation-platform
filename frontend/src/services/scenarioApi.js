@@ -194,4 +194,51 @@ export const downloadCroppedData = async (zipFilename) => {
   }
 };
 
+// === Auto description (Gemini/VLM) ===
+export const autoDescribeSegment = async (scenarioId, startTime, endTime, context) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/auto-describe`, {
+      scenario_id: scenarioId,
+      start_time: startTime,
+      end_time: endTime,
+      context: context || null,
+    });
+    return response.data; // { text }
+  } catch (error) {
+    console.error('Error auto-describing segment:', error);
+    throw error;
+  }
+};
+
+// Save as NPZ
+export const saveSegmentAsNpz = async ({ scenarioId, startTime, endTime, label, description, dataLinks }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/scenarios/save-npz`, {
+      scenario_id: scenarioId,
+      start_time: startTime,
+      end_time: endTime,
+      label: label || null,
+      description: description || null,
+      data_links: dataLinks || {},
+    }, { responseType: 'blob' });
+
+    // Download
+    const disposition = response.headers['content-disposition'] || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match ? match[1] : `segment_${scenarioId}.npz`;
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving NPZ:', error);
+    throw error;
+  }
+};
+
  
