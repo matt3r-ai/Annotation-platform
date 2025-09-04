@@ -1160,9 +1160,20 @@ def load_imu_data_from_s3(s3_url):
         
         s3_client = boto3.client('s3')
         response = s3_client.get_object(Bucket=bucket, Key=key)
-        
-        # 读取parquet数据
-        df = pd.read_parquet(BytesIO(response['Body'].read()))
+
+        # 读取parquet数据（更健壮：fastparquet -> pyarrow.parquet -> pyarrow 引擎）
+        raw = BytesIO(response['Body'].read())
+        try:
+            df = pd.read_parquet(raw, engine='fastparquet')
+        except Exception:
+            try:
+                raw.seek(0)
+                import pyarrow.parquet as pq  # 延迟导入
+                table = pq.read_table(raw)
+                df = table.to_pandas()
+            except Exception:
+                raw.seek(0)
+                df = pd.read_parquet(raw, engine='pyarrow')
         
         print(f"📊 IMU data shape: {df.shape}")
         print(f"📊 IMU data columns: {list(df.columns)}")
@@ -1261,13 +1272,22 @@ async def extract_gps_data(request: dict):
         print(f"📦 Bucket: {bucket_name}")
         print(f"🔑 Key: {key}")
         
-        # 使用S3ParquetManager读取parquet文件
-        from s3_utils import S3ParquetManager
-        s3_manager = S3ParquetManager(bucket_name)
-        
+        # 直接使用 boto3 + BytesIO 读取 parquet（与 IMU 同路径，避免 s3fs 差异）
         try:
-            # 读取parquet文件
-            df = s3_manager.load_parquet(key)
+            s3 = boto3.client('s3')
+            obj = s3.get_object(Bucket=bucket_name, Key=key)
+            raw = BytesIO(obj['Body'].read())
+            try:
+                df = pd.read_parquet(raw, engine='fastparquet')
+            except Exception:
+                try:
+                    raw.seek(0)
+                    import pyarrow.parquet as pq
+                    table = pq.read_table(raw)
+                    df = table.to_pandas()
+                except Exception:
+                    raw.seek(0)
+                    df = pd.read_parquet(raw, engine='pyarrow')
             print(f"✅ Successfully loaded parquet file with {len(df)} rows")
             print(f"📊 Columns: {list(df.columns)}")
             
@@ -1794,7 +1814,15 @@ async def auto_describe(req: AutoDescribeRequest) -> AutoDescribeResponse:
             base_prompt += f"Context: {merged_context}\n"
         base_prompt += ("Now output the description only, without prefixes.")
 
-        text = _generate_description_with_gemini(base_prompt)
+        provider = (getattr(req, 'provider', None) or "gemini").lower()
+        if provider == 'wisead':
+            try:
+                # Placeholder for WiseAD backend; fall back to Gemini for now
+                text = _generate_description_with_gemini("[WISEAD] " + base_prompt)
+            except Exception:
+                text = _generate_description_with_gemini(base_prompt)
+        else:
+            text = _generate_description_with_gemini(base_prompt)
         if not text:
             text = "Automatic summary could not be generated."
         return AutoDescribeResponse(text=text)
