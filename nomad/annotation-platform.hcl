@@ -94,13 +94,6 @@ job "annotation-platform" {
       value = "generic"
     }  
 
-    # Pin backend to a specific client node to stabilize WiseAD routing
-    constraint {
-      attribute = "${node.unique.id}"
-      operator  = "="
-      value     = "fbf738e4"
-    }
-
     network {
       mode = "bridge"
       port "ap-backend-port" {
@@ -140,10 +133,6 @@ job "annotation-platform" {
       config {
         image = "${var.ap-backend-image}"
         ports = ["ap-backend-port"]
-      }
-
-      env {
-        WISEAD_API_BASE = "http://172.16.32.85:9008"
       }
 
       resources {
