@@ -67,7 +67,56 @@ export const v2eApi = {
       emit(jobId, { type: 'status', payload: { status: 'cancelled' } });
       emit(jobId, { type: 'log', payload: 'Job cancelled' });
     }
+  },
+
+  async uploadAndDetect(file, { queries, fps = 1, threshold = 0.3 } = {}) {
+    const form = new FormData();
+    form.append('video', file);
+    if (queries) form.append('queries', queries);
+    form.append('fps', String(fps));
+    form.append('score_threshold', String(threshold));
+    const res = await fetch('/api/v2e/detect', { method: 'POST', body: form });
+    if (!res.ok) throw new Error('Detection request failed');
+    return await res.json();
   }
+};
+
+export const vlmApi = {
+  async extractFrames(file, fps = 1) {
+    const form = new FormData();
+    form.append('video', file);
+    form.append('fps', String(fps));
+    const res = await fetch('/api/vlm/extract-frames', { method: 'POST', body: form });
+    if (!res.ok) throw new Error('Frame extraction failed');
+    return await res.json();
+  },
+  async infer(session, question) {
+    const form = new FormData();
+    form.append('session', session);
+    if (question) form.append('question', question);
+    const res = await fetch('/api/vlm/infer', { method: 'POST', body: form });
+    if (!res.ok) throw new Error('Inference failed');
+    return await res.json();
+  }
+};
+
+// External WiseAD API client (video direct inference)
+const WISEAD_BASE = process.env.REACT_APP_WISEAD_API || 'http://127.0.0.1:9009';
+
+export const wiseadApi = {
+  async analyzeVideo(file, { prompt = 'What driving maneuver is the car performing?', method = 'fps', fps = 1 } = {}) {
+    const form = new FormData();
+    form.append('video', file);
+    form.append('prompt', prompt);
+    form.append('method', method);
+    form.append('fps', String(fps));
+    const res = await fetch(`${WISEAD_BASE}/infer/video`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) throw new Error('WiseAD video inference failed');
+    return await res.json();
+  },
 };
 
 
