@@ -141,6 +141,11 @@ EOH
       config {
         image = "${var.ap-backend-image}"
         ports = ["ap-backend-port"]
+        extra_hosts = ["host.docker.internal:host-gateway"]
+      }
+
+      env {
+        WISEAD_API_BASE = "http://host.docker.internal:9008"
       }
 
       resources {
