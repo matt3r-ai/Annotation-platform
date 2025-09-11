@@ -116,6 +116,21 @@ const HomePage = () => {
                   Coming Soon
                 </button>
               </div>
+
+              {/* VLM Analysis Tool */}
+              <div className="tool-card active">
+                <div className="tool-icon">🤖</div>
+                <h3 className="tool-title">VLM Analysis Tool</h3>
+                <p className="tool-description">
+                  Upload a video, extract frames, run VLM inference, and choose labels.
+                </p>
+                <button 
+                  className="tool-button"
+                  onClick={() => handleToolClick('/vlm-analysis')}
+                >
+                  Launch Tool
+                </button>
+              </div>
             </div>
           </section>
 
