@@ -132,7 +132,9 @@ job "annotation-platform" {
 
       template {
         data = <<EOH
-GOOGLE_API_KEY = {{with secret "kv_hyades/data/nomad/jobs/annotation-plaltform/google"}}{{.Data.data.google_api_key}}{{end}}
+GOOGLE_API_KEY={{with secret "kv_hyades/data/nomad/jobs/annotation-plaltform/google"}}{{.Data.data.google_api_key}}{{end}}
+AWS_REGION="us-west-2"
+AWS_DEFAULT_REGION="us-west-2"
 EOH
         destination = "local/secrets/annotation-platform.env"
         env = true
