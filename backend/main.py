@@ -17,6 +17,8 @@ import uuid
 from dotenv import load_dotenv
 load_dotenv()
 from scenario_analysis import router as scenario_router
+from v2e_detection import router as v2e_router
+from vlm_tool import router as vlm_router
 from dotenv import load_dotenv
 load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +29,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Include scenario analysis router
 app.include_router(scenario_router)
+app.include_router(v2e_router)
+app.include_router(vlm_router)
 
 s3_manager = S3ParquetManager()
 s3_video_manager = S3VideoManager()

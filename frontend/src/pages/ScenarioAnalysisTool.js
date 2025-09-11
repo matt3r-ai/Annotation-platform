@@ -1833,7 +1833,11 @@ const ScenarioAnalysisTool = () => {
                               rows="3"
                               className="description-textarea"
                             />
-                            <div style={{display:'flex', gap:8, marginTop:8}}>
+                            <div style={{display:'flex', gap:8, marginTop:8, alignItems:'center'}}>
+                              <select id="auto-desc-provider" className="select-input" style={{ width: 160 }} defaultValue="gemini">
+                                <option value="gemini">Gemini</option>
+                                <option value="wisead">WiseAD</option>
+                              </select>
                               <button
                                 className="save-segment-btn"
                                 type="button"
@@ -1842,19 +1846,11 @@ const ScenarioAnalysisTool = () => {
                                     const start = markedStartTime ?? 0;
                                     const end = markedEndTime ?? 0;
                                     const duration = Math.max(0, end - start);
-                                    const eventsInRange = (activities || []).filter(a => typeof a.timestamp === 'number' && a.timestamp >= start && a.timestamp <= end);
-                                    const eventSummaries = eventsInRange.map(e => {
-                                      const t = Number.isFinite(e.timestamp) ? e.timestamp.toFixed(1) : '';
-                                      const conf = Number.isFinite(e.confidence) ? e.confidence.toFixed(2) : '';
-                                      const desc = e.description ? `, desc=${e.description}` : '';
-                                      return `${e.type || 'unknown'}@${t}s${conf ? `, conf=${conf}` : ''}${desc}`;
-                                    });
-                                    const ctxParts = [];
-                                    if (segmentLabel) ctxParts.push(`label=${segmentLabel}`);
-                                    ctxParts.push(`duration=${duration.toFixed(1)}s`);
-                                    ctxParts.push(`events=[${eventSummaries.length ? eventSummaries.join('; ') : 'none'}]`);
-                                    const ctx = ctxParts.join('; ');
-                                    const res = await autoDescribeSegment(currentScenario.id, start, end, ctx);
+                                    // 不再将 label 或 events 注入到上下文，保持“纯视频片段”推理
+                                    const ctx = '';
+                                    const providerSelect = document.getElementById('auto-desc-provider');
+                                    const provider = providerSelect ? providerSelect.value : 'gemini';
+                                    const res = await autoDescribeSegment(currentScenario.id, start, end, ctx, provider);
                                     if (res && res.text) {
                                       setSegmentDescription(res.text);
                                     } else {
