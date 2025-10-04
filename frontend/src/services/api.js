@@ -2,32 +2,19 @@ import axios from 'axios';
 
 // Auto-detect API base URL based on current location
 const getApiBase = () => {
-  // If environment variable is set, use it
+  // 1) Explicit override
   if (process.env.REACT_APP_API_BASE) {
-    return process.env.REACT_APP_API_BASE;
+    return String(process.env.REACT_APP_API_BASE).replace(/\/$/, '');
   }
-  
-  // Auto-detect based on current hostname
-  const hostname = window.location.hostname;
-  const port = window.location.port;
-  
-  // If accessing via localhost, use localhost:8000
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://localhost:8000';
-  }
-  
-  // If accessing via IP address, use the same IP with port 8000
-  if (hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-    return `http://${hostname}:8000`;
-  }
-  
-  // If accessing via server IP (production), use the server IP
-  if (hostname === '192.168.10.100' || hostname === '192.168.1.200') {
-    return `http://${hostname}:8000`;
-  }
-  
-  // Default fallback - use server IP for production
-  return 'http://192.168.10.100:8000';
+
+  const { protocol, hostname } = window.location;
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+
+  // 2) Local development → talk to local backend
+  if (isLocal) return 'http://localhost:8000';
+
+  // 3) Production (served over HTTPS) → same-origin (empty base). Nginx should proxy /api → backend.
+  return '';
 };
 
 const API_BASE = getApiBase();
