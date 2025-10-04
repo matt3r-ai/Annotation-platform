@@ -119,4 +119,73 @@ export const wiseadApi = {
   },
 };
 
+// Inference server (S3 → inference → S3 result) configuration
+// Default behavior: use backend proxy to avoid CORS and env dependency.
+// If you explicitly set REACT_APP_INFERENCE_DIRECT=1, we will use REACT_APP_INFERENCE_BASE.
+const INFERENCE_DIRECT = String(process.env.REACT_APP_INFERENCE_DIRECT || '').trim() === '1';
+const INFERENCE_BASE = INFERENCE_DIRECT
+  ? (process.env.REACT_APP_INFERENCE_BASE || '').replace(/\/$/, '')
+  : '';
+
+/**
+ * Call YOLOv10 inference on a remote inference server using an S3 input key.
+ * Returns a JSON with fields like { path, latency, run_metadata } where
+ * path is the S3 key of the result (e.g., matt3r-ce-inference-output/...).
+ */
+export async function runYolov10OnS3({ s3_url, file_type = 'video', fps = 3 }) {
+  // Prefer backend proxy to avoid CORS; only use direct if explicitly enabled
+  const endpoint = (INFERENCE_DIRECT && INFERENCE_BASE)
+    ? `${INFERENCE_BASE}/serve/yolov10/1`
+    : `/api/proxy/infer/yolov10`;
+  const body = JSON.stringify({ s3_url, file_type, fps });
+  const headers = { 'accept': 'application/json', 'Content-Type': 'application/json' };
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.detail || 'Inference request failed';
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+  return data;
+}
+
+/**
+ * Call ego_lane_plus inference on a remote inference server using an S3 input key.
+ */
+export async function runEgoLanePlusOnS3({ s3_url, file_type = 'video', fps = 3 }) {
+  const endpoint = (INFERENCE_DIRECT && INFERENCE_BASE)
+    ? `${INFERENCE_BASE}/serve/ego_lane_plus/1`
+    : `/api/proxy/infer/ego_lane_plus`;
+  const body = JSON.stringify({ s3_url, file_type, fps });
+  const headers = { 'accept': 'application/json', 'Content-Type': 'application/json' };
+  const res = await fetch(endpoint, { method: 'POST', headers, body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.detail || 'Inference request failed';
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+  return data;
+}
+
+/**
+ * Call depth_anything_v2 inference on a remote server using S3 input key.
+ */
+export async function runDepthAnythingOnS3({ s3_url, file_type = 'video', fps = 3 }) {
+  const endpoint = (INFERENCE_DIRECT && INFERENCE_BASE)
+    ? `${INFERENCE_BASE}/serve/depth_anything_v2/1`
+    : `/api/proxy/infer/depth_anything_v2`;
+  const body = JSON.stringify({ s3_url, file_type, fps });
+  const headers = { 'accept': 'application/json', 'Content-Type': 'application/json' };
+  const res = await fetch(endpoint, { method: 'POST', headers, body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.detail || 'Inference request failed';
+    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+  return data;
+}
+
 
