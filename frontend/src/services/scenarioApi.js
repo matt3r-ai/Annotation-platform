@@ -105,6 +105,71 @@ export const getVideoUrl = async (scenarioId) => {
   }
 };
 
+// Fetch JSON from S3 (proxy via backend)
+export const fetchJsonFromS3 = async ({ s3_path, bucket, key }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/s3/get-json`, { s3_path, bucket, key });
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching JSON from S3:', error);
+    throw error;
+  }
+};
+
+// Download any S3 object via backend proxy (binary response)
+export const downloadS3Object = async ({ bucket, key, filename }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/s3/download-object`, { bucket, key, filename }, { responseType: 'blob' });
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename || (key.split('/').pop()) || 'download.bin');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    return { success: true };
+  } catch (error) {
+    console.error('Error downloading S3 object:', error);
+    throw error;
+  }
+};
+
+// Render server-side overlaid video given S3 video and yolov10.json
+export const renderYoloVideo = async ({ video_path, result_json_path, fps = 3 }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/viz/render-yolo`, { video_path, result_json_path, fps });
+    return response.data;
+  } catch (error) {
+    console.error('Error rendering YOLO video:', error);
+    throw error;
+  }
+};
+
+// Render server-side overlaid video for ego lane given S3 video and ego_lane.json
+export const renderEgoLaneVideo = async ({ video_path, result_json_path, result_zip_path, fps = 3 }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/viz/render-ego-lane`, { video_path, result_json_path, result_zip_path, fps });
+    return response.data;
+  } catch (error) {
+    const msg = error?.response?.data?.detail || error?.message || error?.toString();
+    console.error('Error rendering ego lane video:', msg);
+    throw error;
+  }
+};
+
+// Render server-side depth video from ZIP of NPYs
+export const renderDepthVideo = async ({ video_path, result_zip_path, fps = 3 }) => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/viz/render-depth`, { video_path, result_zip_path, fps });
+    return response.data;
+  } catch (error) {
+    const msg = error?.response?.data?.detail || error?.message || error?.toString();
+    console.error('Error rendering depth video:', msg);
+    throw error;
+  }
+};
+
 // Get activity timeline
 export const getActivityTimeline = async (scenarioId) => {
   try {
