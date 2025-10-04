@@ -33,7 +33,6 @@ STATIC_DIR = "/app/data/saved_video"
 INFERENCE_BASE = os.getenv("INFERENCE_BASE", "http://localhost:18085").rstrip("/")
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/api/static", StaticFiles(directory=STATIC_DIR), name="api_static")
 
 # Include scenario analysis router
 app.include_router(scenario_router)
@@ -494,9 +493,9 @@ def extract_frames_from_s3(
         subprocess.run(cmd, check=True)
     except Exception as e:
         return {"error": f"ffmpeg failed: {str(e)}"}
-    # 5. Return image URLs (use /api/static to avoid requiring frontend nginx to proxy /static)
+    # 5. Return image URLs
     rel_dir = f"frames/{session_id}"
-    urls = [f"/api/static/{rel_dir}/{f}" for f in sorted(os.listdir(output_dir)) if f.endswith('.jpg')]
+    urls = [f"/static/{rel_dir}/{f}" for f in sorted(os.listdir(output_dir)) if f.endswith('.jpg')]
     return {"frames": urls}
 
 # --- Generic S3 JSON proxy ---
