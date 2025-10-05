@@ -59,4 +59,4 @@ networks:
 
 volumes:
   annotation-platform-backend-volume:
-    driver: local 
+    driver: local
