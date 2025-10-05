@@ -17,3 +17,4 @@ ultralytics
 opencv-python-headless
 torchvision
 requests
+pycocotools

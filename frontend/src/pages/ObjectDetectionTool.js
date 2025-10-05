@@ -654,7 +654,7 @@ const ObjectDetectionTool = () => {
     if (!key) { alert('Missing S3 video key'); return; }
     try {
       setIsLoadingFrames(true);
-      setFrameUrls([]);
+        setFrameUrls([]);
       setCurrentFrameIndex(0);
       setCurrentS3Key(key);
       const filename = key.split('/').pop() || 'video.mp4';
@@ -995,14 +995,14 @@ const ObjectDetectionTool = () => {
                           </div>
                           <button className="test-button" disabled={!key} onClick={()=> loadFramesFromS3Key(key)} style={{ minWidth:160 }}>
                             Load Frames (3 fps)
-                          </button>
+                </button>
                         </div>
                       );
                     })}
-                  </div>
-                )}
               </div>
-            </div>
+            )}
+          </div>
+        </div>
           ) : (
           /* 视频预览容器 */
           <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
