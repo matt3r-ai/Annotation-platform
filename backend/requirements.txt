@@ -9,3 +9,12 @@ python-dotenv==1.0.0
 psycopg2-binary==2.9.9
 pyarrow
 fastparquet
+google-generativeai==0.6.0
+Pillow
+torch
+transformers
+ultralytics
+opencv-python-headless
+torchvision
+requests
+pycocotools

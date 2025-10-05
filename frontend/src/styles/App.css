@@ -259,37 +259,7 @@
   font-family: 'Inter', sans-serif;
 }
 
-/* Button style improvements */
-button {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  background: linear-gradient(135deg, #333333 0%, #555555 100%);
-  color: white;
-  margin: 0 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  font-family: 'JetBrains Mono', 'Inter', monospace;
-}
-
-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
-  background: linear-gradient(135deg, #444444 0%, #666666 100%);
-}
-
-button:disabled {
-  background: linear-gradient(135deg, #222222 0%, #333333 100%);
-  color: #666666;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
+/* Button style improvements (scoped via .test-button and .clip-video-button only) */
 
 /* Selected points style */
 .selected-points-container {

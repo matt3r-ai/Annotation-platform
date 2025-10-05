@@ -14,6 +14,10 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      # WiseAD inference service base URL (host Docker -> local machine)
+      - WISEAD_API_BASE=http://host.docker.internal:9008
+      # External inference server base URL for yolov10/ego_lane_plus/depth_anything_v2
+      - INFERENCE_BASE=${INFERENCE_BASE:-http://host.docker.internal:18085}
     volumes:
       - annotation-platform-backend-volume:/app/data
     networks:
@@ -55,4 +59,4 @@ networks:
 
 volumes:
   annotation-platform-backend-volume:
-    driver: local 
+    driver: local

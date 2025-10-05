@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import ReactDOM from 'react-dom';
 import { s3VideoAPI } from '../services/api';
+import { runYolov10OnS3 } from '../services/v2eApi';
+import { fetchJsonFromS3, fetchScenarios as fetchScenariosApi } from '../services/scenarioApi';
 import '../styles/App.css';
 
 const ObjectDetectionTool = () => {
   const [dataSource, setDataSource] = useState('local');
+  const [viewMode, setViewMode] = useState('annotate'); // 'fetch' | 'annotate'
   const [localFile, setLocalFile] = useState(null);
   const [localVideoUrl, setLocalVideoUrl] = useState('');
   const [orgIds, setOrgIds] = useState([]);
@@ -14,8 +17,11 @@ const ObjectDetectionTool = () => {
   const [s3Videos, setS3Videos] = useState([]);
   const [currentS3VideoIndex, setCurrentS3VideoIndex] = useState(0);
   const [s3VideoUrl, setS3VideoUrl] = useState('');
+  const [currentS3Key, setCurrentS3Key] = useState('');
   const [frameUrls, setFrameUrls] = useState([]);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [isLoadingFrames, setIsLoadingFrames] = useState(false);
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
   
   // 标注相关状态
   const [boundingBoxes, setBoundingBoxes] = useState({}); // {frameIndex: [boxes]}
@@ -143,27 +149,28 @@ const ObjectDetectionTool = () => {
 
   // 切换帧时，自动加载 boxes
   React.useEffect(() => {
-    // 如果新帧有 box，直接加载
-    if (frameBoxes[currentFrameIndex]) {
-      setBoxes(frameBoxes[currentFrameIndex]);
-    } else {
-      // 没有则向前查找最近有标注的帧，拷贝其 box 作为初始值
-      let found = false;
-      for (let i = currentFrameIndex - 1; i >= 0; i--) {
-        if (frameBoxes[i] && frameBoxes[i].length > 0) {
-          // 深拷贝并生成新 id
-          const prevBoxes = frameBoxes[i].map(b => ({ ...b, id: Date.now() + Math.random() }));
-          setBoxes(prevBoxes);
-          setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: prevBoxes }));
-          found = true;
-          break;
+    // 延迟到下一次绘制，保证 <img> onLoad 已触发（避免尺寸尚未就绪时计算 overlay）
+    const handle = requestAnimationFrame(() => {
+      if (frameBoxes[currentFrameIndex]) {
+        setBoxes(frameBoxes[currentFrameIndex]);
+      } else {
+        let found = false;
+        for (let i = currentFrameIndex - 1; i >= 0; i--) {
+          if (frameBoxes[i] && frameBoxes[i].length > 0) {
+            const prevBoxes = frameBoxes[i].map(b => ({ ...b, id: Date.now() + Math.random() }));
+            setBoxes(prevBoxes);
+            setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: prevBoxes }));
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          setBoxes([]);
         }
       }
-      if (!found) {
-        setBoxes([]);
-      }
-    }
-    setSelectedId(null);
+      setSelectedId(null);
+    });
+    return () => cancelAnimationFrame(handle);
     // eslint-disable-next-line
   }, [currentFrameIndex]);
 
@@ -177,6 +184,8 @@ const ObjectDetectionTool = () => {
   const [naturalWidth, setNaturalWidth] = React.useState(1280); // default fallback
   const [naturalHeight, setNaturalHeight] = React.useState(720);
   const imgRef = React.useRef(null);
+  // Force re-render after img element finishes loading current frame
+  const [imgVersion, setImgVersion] = React.useState(0);
 
   // When frame changes, preload image and set natural size
   React.useEffect(() => {
@@ -478,15 +487,9 @@ const ObjectDetectionTool = () => {
 
   React.useEffect(() => {
     if (dataSource === 's3') {
-      const loadOrgIds = async () => {
-        try {
-          const response = await s3VideoAPI.getOrgs();
-          setOrgIds(response.data.org_ids || []);
-        } catch (error) {
-          setOrgIds([]);
-        }
-      };
-      loadOrgIds();
+      setViewMode('fetch');
+    } else {
+      setViewMode('annotate');
     }
   }, [dataSource]);
 
@@ -567,21 +570,7 @@ const ObjectDetectionTool = () => {
     };
   }, [isDrawing, startPoint, currentBox, currentFrameIndex, isResizing, selectedId]);
 
-  const handleOrgIdChange = async (orgId) => {
-    setSelectedOrgId(orgId);
-    setSelectedKeyId('');
-    setKeyIds([]);
-    setS3Videos([]);
-    setS3VideoUrl('');
-    if (orgId) {
-      try {
-        const response = await s3VideoAPI.getKeys(orgId);
-        setKeyIds(response.data.key_ids || []);
-      } catch (error) {
-        setKeyIds([]);
-      }
-    }
-  };
+  const handleOrgIdChange = async () => {};
 
   // 修改loadS3Video为抽帧
   const loadS3Video = async (videoInfo) => {
@@ -590,6 +579,7 @@ const ObjectDetectionTool = () => {
       return;
     }
     try {
+      setIsLoadingFrames(true);
       setFrameUrls([]);
       setCurrentFrameIndex(0);
       const response = await s3VideoAPI.extractFrames({
@@ -604,23 +594,13 @@ const ObjectDetectionTool = () => {
     } catch (error) {
       setFrameUrls([]);
       console.error('Frame extraction error:', error);
+    } finally {
+      setIsLoadingFrames(false);
     }
   };
 
-  const handleNextVideo = () => {
-    if (currentS3VideoIndex < s3Videos.length - 1) {
-      const nextIndex = currentS3VideoIndex + 1;
-      setCurrentS3VideoIndex(nextIndex);
-      loadS3Video(s3Videos[nextIndex]);
-    }
-  };
-  const handlePrevVideo = () => {
-    if (currentS3VideoIndex > 0) {
-      const prevIndex = currentS3VideoIndex - 1;
-      setCurrentS3VideoIndex(prevIndex);
-      loadS3Video(s3Videos[prevIndex]);
-    }
-  };
+  const handleNextVideo = () => {};
+  const handlePrevVideo = () => {};
 
   const handleLocalFileChange = (e) => {
     const file = e.target.files[0];
@@ -661,24 +641,164 @@ const ObjectDetectionTool = () => {
 
 
   // 加入 handleLoadS3Video
-  const handleLoadS3Video = async () => {
-    if (!selectedOrgId || !selectedKeyId) return;
+  const handleLoadS3Video = async () => {};
+
+  // --- MCDB filter like Video2Everything ---
+  const [mcdbStart, setMcdbStart] = useState(() => new Date(Date.now() - 7*24*3600*1000).toISOString().slice(0,10));
+  const [mcdbEnd, setMcdbEnd] = useState(() => new Date().toISOString().slice(0,10));
+  const [mcdbLimit, setMcdbLimit] = useState(50);
+  const [mcdbItems, setMcdbItems] = useState([]);
+  const [mcdbLoading, setMcdbLoading] = useState(false);
+
+  async function loadFramesFromS3Key(key) {
+    if (!key) { alert('Missing S3 video key'); return; }
     try {
-      // 1. 获取 S3 视频列表
-      const response = await s3VideoAPI.getFrontVideos(selectedOrgId, selectedKeyId);
-      const videos = response.data.videos || [];
-      setS3Videos(videos);
-      setCurrentS3VideoIndex(0);
-      // 2. 加载首个视频帧
-      if (videos.length > 0) {
-        await loadS3Video(videos[0]);
-      } else {
+      setIsLoadingFrames(true);
         setFrameUrls([]);
+      setCurrentFrameIndex(0);
+      setCurrentS3Key(key);
+      const filename = key.split('/').pop() || 'video.mp4';
+      const response = await s3VideoAPI.extractFrames({ s3_key: key, filename, fps: 3 });
+      const frames = response.data?.frames || response.frames || [];
+      setFrameUrls(frames);
+      setViewMode('annotate');
+    } catch (e) {
+      console.error(e);
+      alert('Extract frames failed');
+    } finally {
+      setIsLoadingFrames(false);
+    }
+  }
+
+  // Helper: select datasource with view mode management
+  const handleSelectDataSource = (source) => {
+    setDataSource(source);
+    if (source === 's3') setViewMode('fetch'); else setViewMode('annotate');
+  };
+
+  // --- Helpers for YOLOv10 autofill ---
+  function normalizeS3Path(input, fallbackBucket = 'matt3r-ce-inference-output') {
+    if (!input || typeof input !== 'string') return { bucket: fallbackBucket, key: '' };
+    let p = input.trim();
+    if (p.startsWith('s3://')) p = p.slice(5);
+    if (p.startsWith('/')) p = p.slice(1);
+    if (fallbackBucket && p.startsWith(fallbackBucket + '/')) {
+      return { bucket: fallbackBucket, key: p.slice(fallbackBucket.length + 1) };
+    }
+    const idx = p.indexOf('/');
+    if (idx > 0) return { bucket: p.slice(0, idx), key: p.slice(idx + 1) };
+    return { bucket: fallbackBucket, key: p };
+  }
+
+  function parseYoloFrames(payload) {
+    if (!payload || typeof payload !== 'object') return [];
+    // Accept several structures:
+    // 1) { yolov10: [ { frame_index, detections:[...] } ] }
+    // 2) { yolov10: { frames:[...] } }
+    // 3) { yolov10: { 0:{...}, 1:{...} } }
+    // 4) 同理支持 yolo / YOLO / frames 顶层
+    // 5) 直接数组或按索引字典
+    let root = payload?.yolov10 ?? payload?.yolo ?? payload?.YOLO ?? payload?.frames ?? payload;
+    if (root && typeof root === 'object' && !Array.isArray(root) && Array.isArray(root.frames)) {
+      root = root.frames;
+    }
+    if (!Array.isArray(root)) {
+      if (root && typeof root === 'object') {
+        const entries = Object.entries(root).filter(([k,v]) => /^\d+$/.test(String(k)) && typeof v === 'object');
+        if (entries.length > 0) {
+          entries.sort((a,b) => Number(a[0]) - Number(b[0]));
+          root = entries.map(([k,v]) => ({ frame_index: Number(k), ...(typeof v==='object'?v:{}) }));
+        } else {
+          root = [];
+        }
+      } else {
+        root = [];
       }
-    } catch (err) {
-      alert('Failed to load S3 videos or frames');
-      setS3Videos([]);
-      setFrameUrls([]);
+    }
+    console.log('[YOLO Autofill] root sample =', Array.isArray(root) ? root[0] : root);
+    return root.map((item, idx) => {
+      const detections = item?.detections || item?.boxes || item?.objects || item || [];
+      const list = Array.isArray(detections) ? detections : [];
+      const fi = (typeof item?.frame_index === 'number' ? item.frame_index
+                : typeof item?.frame === 'number' ? item.frame
+                : idx);
+      return { frame_index: fi, detections: list };
+    });
+  }
+
+  function toBoxes(dets) {
+    const out = [];
+    for (const d of dets) {
+      let x, y, w, h;
+      if (Array.isArray(d?.box) && d.box.length >= 4) {
+        const [a,b,c,dv] = d.box.map(Number);
+        if (c > a && dv > b) { x=a; y=b; w=c-a; h=dv-b; } else { x=a; y=b; w=c; h=dv; }
+      } else if (Array.isArray(d?.bbox) && d.bbox.length >= 4) {
+        const [a,b,c,dv] = d.bbox.map(Number);
+        if (c > a && dv > b) { x=a; y=b; w=c-a; h=dv-b; } else { x=a; y=b; w=c; h=dv; }
+      } else if (Array.isArray(d?.xyxy) && d.xyxy.length >= 4) {
+        const [x1,y1,x2,y2] = d.xyxy.map(Number); x=x1; y=y1; w=x2-x1; h=y2-y1;
+      } else if ([d?.x1,d?.y1,d?.x2,d?.y2].every(v => typeof v === 'number')) {
+        x=Number(d.x1); y=Number(d.y1); w=Number(d.x2)-x; h=Number(d.y2)-y;
+      } else if ([d?.x,d?.y,d?.w,d?.h].every(v => typeof v === 'number')) {
+        x=Number(d.x); y=Number(d.y); w=Number(d.w); h=Number(d.h);
+      } else {
+        continue;
+      }
+      if (w <= 0 || h <= 0) continue;
+      out.push({ id: Date.now() + Math.random(), x, y, w, h, label: d?.label || '', trackingId: d?.tracking_id || d?.track_id || '' });
+    }
+    return out;
+  }
+
+  const handleAutofillYolov10 = async () => {
+    try {
+      if (frameUrls.length === 0) { alert('Please load S3 frames first'); return; }
+      if (!currentS3Key) { alert('Missing S3 video key'); return; }
+      setIsAutoDetecting(true);
+      // 1) Inference at 3fps
+      const inf = await runYolov10OnS3({ s3_url: currentS3Key, file_type: 'video', fps: 3 });
+      const basePath = inf?.path || '';
+      console.log('[YOLO Autofill] inference response =', inf);
+      if (!basePath) { alert('Inference returned no path'); setIsAutoDetecting(false); return; }
+      const jsonPath = basePath.toLowerCase().endsWith('yolov10.json') ? basePath : `${basePath.replace(/\/?$/, '')}/yolov10.json`;
+      console.log('[YOLO Autofill] jsonPath =', jsonPath);
+      const { bucket, key } = normalizeS3Path(jsonPath, 'matt3r-ce-inference-output');
+      console.log('[YOLO Autofill] normalized json =', bucket, key);
+      // 2) Fetch JSON
+      const res = await fetchJsonFromS3({ bucket, key });
+      console.log('[YOLO Autofill] fetchJsonFromS3 response sample =', Object.keys(res || {}));
+      let payload = res?.json;
+      if (!payload && typeof res?.text === 'string') {
+        try { payload = JSON.parse(res.text); } catch { payload = {}; }
+      }
+      if (!payload || Object.keys(payload).length === 0) {
+        alert('Result JSON is empty');
+        setIsAutoDetecting(false);
+        return;
+      }
+      console.log('[YOLO Autofill] payload keys =', Object.keys(payload));
+      const frames = parseYoloFrames(payload);
+      console.log('[YOLO Autofill] parsed frames =', frames.length);
+      if (!frames || frames.length === 0) { alert('No detections in result'); setIsAutoDetecting(false); return; }
+      // 3) Map detections to our extracted frames count
+      const n = frameUrls.length;
+      const m = frames.length;
+      if (n === 0) { alert('No extracted frames to apply'); setIsAutoDetecting(false); return; }
+      const mapped = {};
+      for (let i = 0; i < n; i++) {
+        const j = m > 1 ? Math.round(i * (m - 1) / (n - 1)) : 0;
+        const dets = frames[j]?.detections || [];
+        mapped[i] = toBoxes(dets);
+      }
+      setFrameBoxes(mapped);
+      setBoxes(mapped[currentFrameIndex] || []);
+      console.log('[YOLO Autofill] mapped boxes for frame 0 =', mapped[0]?.length || 0);
+    } catch (e) {
+      console.error(e);
+      alert('Autofill failed');
+    } finally {
+      setIsAutoDetecting(false);
     }
   };
 
@@ -787,7 +907,7 @@ const ObjectDetectionTool = () => {
             <div className="selection-options">
               <div
                 className={`option-card${dataSource === 'local' ? ' active' : ''}`}
-                onClick={() => setDataSource('local')}
+                onClick={() => handleSelectDataSource('local')}
               >
                 <div className="option-icon">📁</div>
                 <h3>Local Upload</h3>
@@ -795,7 +915,7 @@ const ObjectDetectionTool = () => {
               </div>
               <div
                 className={`option-card${dataSource === 's3' ? ' active' : ''}`}
-                onClick={() => setDataSource('s3')}
+                onClick={() => handleSelectDataSource('s3')}
               >
                 <div className="option-icon">☁️</div>
                 <h3>Direct S3 Link</h3>
@@ -809,49 +929,82 @@ const ObjectDetectionTool = () => {
                 <input type="file" accept="video/*" onChange={handleLocalFileChange} className="select-input" style={{ marginTop: 4 }} />
               </div>
             )}
-            {/* S3 selection UI */}
-            {dataSource === 's3' && (
-              <div style={{ marginTop: 18 }}>
-                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Organization ID:</label>
-                <select
-                  value={selectedOrgId}
-                  onChange={e => handleOrgIdChange(e.target.value)}
-                  className="select-input"
-                >
-                  <option value="">Select Organization ID</option>
-                  {orgIds.map(orgId => (
-                    <option key={orgId} value={orgId}>{orgId}</option>
-                  ))}
-                </select>
-                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, marginTop: 10, display: 'block', textAlign: 'left' }}>Key ID:</label>
-                <select
-                  value={selectedKeyId}
-                  onChange={e => setSelectedKeyId(e.target.value)}
-                  className="select-input"
-                  disabled={!selectedOrgId}
-                >
-                  <option value="">Select Key ID</option>
-                  {keyIds.map(keyId => (
-                    <option key={keyId} value={keyId}>{keyId}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={handleLoadS3Video}
-                  className="test-button"
-                  style={{ marginTop: 10 }}
-                  disabled={!selectedOrgId || !selectedKeyId}
-                >
-                  Load S3 Video
-                </button>
-              </div>
-            )}
+            {/* MCDB filter moved to center panel; nothing here in sidebar now for S3 */}
           </div>
         </div>
         {/* Main Content: Annotation Canvas/Video/Tool */}
         <div className="main-content">
-          {/* ...你的标注/视频/画布功能... */}
-          {/* 保持原有功能逻辑，只是结构和 className 变化 */}
-          {/* 视频预览容器 */}
+          {viewMode === 'fetch' ? (
+            <div style={{ padding: 12 }}>
+              <div style={{ background:'#fff', color:'#111', borderRadius:12, border:'1px solid #e9eef5', padding:16 }}>
+                <h3 style={{ marginTop:0, marginBottom:12 }}>Fetch Scenarios</h3>
+                <div style={{ display:'flex', gap:12, alignItems:'flex-end', flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', flexDirection:'column' }}>
+                    <label style={{ fontSize:12, color:'#506176', marginBottom:6 }}>Start</label>
+                    <input type="date" value={mcdbStart} onChange={e=>setMcdbStart(e.target.value)} className="select-input" style={{ width:180, background:'#fff', color:'#111' }} />
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column' }}>
+                    <label style={{ fontSize:12, color:'#506176', marginBottom:6 }}>End</label>
+                    <input type="date" value={mcdbEnd} onChange={e=>setMcdbEnd(e.target.value)} className="select-input" style={{ width:180, background:'#fff', color:'#111' }} />
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column' }}>
+                    <label style={{ fontSize:12, color:'#506176', marginBottom:6 }}>Limit</label>
+                    <input className="select-input" type="number" min={1} max={500} value={mcdbLimit} onChange={e=>setMcdbLimit(Number(e.target.value||50))} style={{ width: 120, background:'#fff', color:'#111' }} />
+                  </div>
+                  <button onClick={async ()=>{
+                    setMcdbLoading(true);
+                    setMcdbItems([]);
+                    try{
+                      const res = await fetchScenariosApi({ event_types: [], start_date: mcdbStart, end_date: mcdbEnd, limit: mcdbLimit });
+                      const scenarios = res?.scenarios || [];
+                      setMcdbItems(scenarios);
+                    }catch(err){
+                      alert('Fetch MCDB failed');
+                    }finally{
+                      setMcdbLoading(false);
+                    }
+                  }} disabled={mcdbLoading} style={{
+                    background:'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    padding:'10px 18px',
+                    borderRadius:8,
+                    fontWeight:700,
+                    letterSpacing:'0.5px',
+                    textTransform:'uppercase',
+                    color:'#fff',
+                    boxShadow:'0 6px 16px rgba(118,75,162,0.35)'
+                  }}>{mcdbLoading?'⏳ Fetching...':'🚀 Fetch Scenarios'}</button>
+                </div>
+                {mcdbItems.length>0 && (
+                  <div style={{ marginTop: 10, maxHeight: 360, overflow: 'auto', textAlign: 'left', fontSize: 12, background:'#fff', border:'1px solid #e9eef5', borderRadius:12 }}>
+                    {mcdbItems.map((item)=>{
+                      const links = item?.data_links || {};
+                      const video = links.video || {};
+                      const frontUrl = video.front;
+                      function s3ToKey(url){
+                        if(!url || typeof url !== 'string') return '';
+                        const m = url.trim().match(/^s3:\/\/[^/]+\/(.+)$/i);
+                        if(m){ return m[1]; }
+                        return url.replace(/^[^/]+\//, '');
+                      }
+                      const key = s3ToKey(frontUrl);
+                      return (
+                        <div key={item.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 12px', borderBottom:'1px solid #eef3f8' }}>
+                          <div>
+                            <div style={{ color:'#1a55a5', fontWeight:600 }}>#{item.id}</div>
+                            <div style={{ color:'#6a7b91', fontSize:12, wordBreak:'break-all' }}>{frontUrl || 'No front video'}</div>
+                          </div>
+                          <button className="test-button" disabled={!key} onClick={()=> loadFramesFromS3Key(key)} style={{ minWidth:160 }}>
+                            Load Frames (3 fps)
+                </button>
+                        </div>
+                      );
+                    })}
+              </div>
+            )}
+          </div>
+        </div>
+          ) : (
+          /* 视频预览容器 */
           <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
             <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {(dataSource === 'local' && localVideoUrl) ? (
@@ -896,31 +1049,34 @@ const ObjectDetectionTool = () => {
                           transform: `scale(${zoom})`,
                           transformOrigin: 'center center',
                         }}
+                        onLoad={() => {
+                          // Trigger a re-render so getImgInfo() can compute positions with image dimensions ready
+                          setImgVersion(v => v + 1);
+                          // Re-apply current frame boxes to ensure overlay shows immediately after image load
+                          setBoxes(frameBoxes[currentFrameIndex] || []);
+                        }}
                       />
                     )}
                     {/* bounding box 层 */}
                     {(() => {
                       const info = getImgInfo();
                       if (!info) return null;
-                      return boxes.map(box => {
-                        const scaleX = info.scaleX, scaleY = info.scaleY;
-                        return (
-                          <div
-                            key={box.id}
-                            style={{
-                              position: 'absolute',
-                              left: box.x * info.scaleX + info.offsetX,
-                              top: box.y * info.scaleY + info.offsetY,
-                              width: box.w * info.scaleX,
-                              height: box.h * info.scaleY,
-                              border: box.id === selectedId ? '2px solid #00ff96' : '2px solid #ff6b6b',
-                              background: box.id === selectedId ? 'rgba(0,255,150,0.15)' : 'rgba(255,107,107,0.10)',
-                              zIndex: 10,
-                              pointerEvents: 'none',
-                            }}
-                          />
-                        );
-                      });
+                      return boxes.map(box => (
+                        <div
+                          key={box.id}
+                          style={{
+                            position: 'absolute',
+                            left: box.x * info.scaleX + info.offsetX,
+                            top: box.y * info.scaleY + info.offsetY,
+                            width: Math.max(1, box.w * info.scaleX),
+                            height: Math.max(1, box.h * info.scaleY),
+                            border: box.id === selectedId ? '2px solid #00ff96' : '2px solid #ff6b6b',
+                            background: box.id === selectedId ? 'rgba(0,255,150,0.15)' : 'rgba(255,107,107,0.10)',
+                            zIndex: 10,
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      ));
                     })()}
                     {/* Current drawing box */}
                     {drawStart && (() => {
@@ -987,14 +1143,13 @@ const ObjectDetectionTool = () => {
                 <div style={{ color: '#888', textAlign: 'center', fontSize: 16 }}>
                   Please select a video
                   {dataSource === 's3' && (
-                    <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>
-                      Debug: frameUrls.length = {frameUrls.length}
-                    </div>
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Use the Fetch Scenarios panel to select a video.</div>
                   )}
                 </div>
               )}
             </div>
           </div>
+          )}
         </div>
         {/* Right Panel: Annotation Panel */}
         <div className="selected-points-container">
@@ -1100,6 +1255,13 @@ const ObjectDetectionTool = () => {
           </div>
           
           {/* Export button */}
+          <button
+            onClick={handleAutofillYolov10}
+            className="test-button"
+            style={{ width: '100%', marginBottom: 8 }}
+            disabled={dataSource !== 's3' || frameUrls.length === 0 || isAutoDetecting}
+          >{isAutoDetecting ? 'Running YOLOv10…' : 'YOLOv10 Autofill (3 fps)'}
+          </button>
           <button
             onClick={handleExportAnnotations}
             disabled={Object.keys(annotations).length === 0}

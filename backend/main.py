@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Body, UploadFile, File
+from fastapi import FastAPI, Body, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from s3_utils import S3ParquetManager
@@ -14,16 +14,33 @@ import tempfile
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import unquote
 import uuid
+from dotenv import load_dotenv
+import requests
+import json
+import shutil
+load_dotenv()
 from scenario_analysis import router as scenario_router
-
+from v2e_detection import router as v2e_router
+from vlm_tool import router as vlm_router
+from visualization.yolov10_visualization import router as yolov10_vis_router
+from visualization.ego_lane_visualization import router as ego_lane_vis_router
+from visualization.depth_anything_visualization import router as depth_vis_router
+from dotenv import load_dotenv
+load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Unified volume directory for saved videos (container-friendly path)
 STATIC_DIR = "/app/data/saved_video"
+INFERENCE_BASE = os.getenv("INFERENCE_BASE", "http://localhost:18085").rstrip("/")
 app = FastAPI(title="Annotation Platform API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Include scenario analysis router
 app.include_router(scenario_router)
+app.include_router(v2e_router)
+app.include_router(vlm_router)
+app.include_router(yolov10_vis_router)
+app.include_router(ego_lane_vis_router)
+app.include_router(depth_vis_router)
 
 s3_manager = S3ParquetManager()
 s3_video_manager = S3VideoManager()
@@ -44,6 +61,58 @@ class FileKeyRequest(BaseModel):
 @app.get("/")
 async def root():
     return {"message": "Annotation Platform API", "status": "running"}
+
+
+# Simple proxy to the external inference server to avoid browser CORS
+@app.post("/api/proxy/infer/yolov10")
+async def proxy_yolov10(req: dict):
+    try:
+        url = f"{INFERENCE_BASE}/serve/yolov10/1"
+        r = requests.post(url, json=req, timeout=60)
+        content_type = r.headers.get("content-type", "application/json")
+        if "application/json" in content_type:
+            data = r.json()
+        else:
+            data = {"detail": r.text}
+        if not r.ok:
+            raise HTTPException(status_code=r.status_code, detail=data)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"proxy_error: {e}")
+
+# Proxy for ego_lane_plus inference
+@app.post("/api/proxy/infer/ego_lane_plus")
+async def proxy_ego_lane_plus(req: dict):
+    try:
+        url = f"{INFERENCE_BASE}/serve/ego_lane_plus/1"
+        r = requests.post(url, json=req, timeout=60)
+        content_type = r.headers.get("content-type", "application/json")
+        if "application/json" in content_type:
+            data = r.json()
+        else:
+            data = {"detail": r.text}
+        if not r.ok:
+            raise HTTPException(status_code=r.status_code, detail=data)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"proxy_error: {e}")
+
+# Proxy for depth_anything_v2 inference
+@app.post("/api/proxy/infer/depth_anything_v2")
+async def proxy_depth_anything(req: dict):
+    try:
+        url = f"{INFERENCE_BASE}/serve/depth_anything_v2/1"
+        r = requests.post(url, json=req, timeout=60)
+        content_type = r.headers.get("content-type", "application/json")
+        if "application/json" in content_type:
+            data = r.json()
+        else:
+            data = {"detail": r.text}
+        if not r.ok:
+            raise HTTPException(status_code=r.status_code, detail=data)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"proxy_error: {e}")
 
 @app.get("/api/health")
 async def health():
@@ -428,6 +497,72 @@ def extract_frames_from_s3(
     rel_dir = f"frames/{session_id}"
     urls = [f"/static/{rel_dir}/{f}" for f in sorted(os.listdir(output_dir)) if f.endswith('.jpg')]
     return {"frames": urls}
+
+# --- Generic S3 JSON proxy ---
+@app.post("/api/s3/get-json")
+def get_json_from_s3(req: dict):
+    """Proxy-read a JSON object from S3.
+
+    Accepts either:
+      - { "s3_path": "bucket/key" or "s3://bucket/key" }
+      - { "bucket": "...", "key": "..." }
+    Returns JSON content if parseable; otherwise returns text.
+    """
+    s3_path = (req or {}).get("s3_path")
+    bucket = (req or {}).get("bucket")
+    key = (req or {}).get("key")
+
+    try:
+        if s3_path and isinstance(s3_path, str):
+            p = s3_path.strip()
+            if p.startswith("s3://"):
+                p = p[5:]
+            if "/" in p:
+                b, k = p.split("/", 1)
+            else:
+                raise HTTPException(status_code=400, detail="invalid s3_path")
+        else:
+            b, k = bucket, key
+        if not b or not k:
+            raise HTTPException(status_code=400, detail="missing bucket/key")
+
+        s3 = boto3.client("s3")
+        obj = s3.get_object(Bucket=b, Key=k)
+        text = obj["Body"].read().decode("utf-8")
+        try:
+            return {"json": json.loads(text)}
+        except Exception:
+            return {"text": text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"s3_read_failed: {e}")
+
+# --- Generic S3 download proxy (binary) ---
+@app.post("/api/s3/download-object")
+def download_object_from_s3(req: dict):
+    """Download any S3 object via backend proxy.
+
+    Body: { bucket: str, key: str, filename?: str }
+    Returns file bytes with attachment headers.
+    """
+    bucket = (req or {}).get("bucket")
+    key = (req or {}).get("key")
+    filename = (req or {}).get("filename")
+    if not bucket or not key:
+        raise HTTPException(status_code=400, detail="missing bucket/key")
+    if not filename:
+        filename = key.split("/")[-1] or "download.bin"
+    try:
+        s3 = boto3.client("s3")
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        data = obj["Body"].read()
+        # Best-effort content type detection
+        ctype = obj.get("ContentType") or ("application/zip" if filename.lower().endswith(".zip") else "application/octet-stream")
+        headers = {"Content-Disposition": f"attachment; filename=\"{filename}\""}
+        return Response(content=data, media_type=ctype, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"s3_download_failed: {e}")
 
 if __name__ == "__main__":
     import uvicorn

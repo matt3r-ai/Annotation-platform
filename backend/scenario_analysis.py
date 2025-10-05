@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import json
 import os
 import psycopg2
@@ -9,9 +9,13 @@ import boto3
 import tempfile
 import os
 from pathlib import Path
+import shutil
+import uuid
 import pandas as pd
 from fastapi.responses import FileResponse
 import zipfile
+from fastapi import Response
+from io import BytesIO
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
@@ -105,6 +109,15 @@ S3_BUCKET = "matt3r-driving-footage-us-west-2"
 def ensure_download_dir():
     """确保下载目录存在"""
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# Public static base (mounted in backend/main.py)
+STATIC_BASE_DIR = "/app/data/saved_video"
+WISEAD_ARTIFACTS_DIR = os.path.join(STATIC_BASE_DIR, "wisead")
+GEMINI_FRAMES_ARTIFACTS_DIR = os.path.join(STATIC_BASE_DIR, "gemini_frames")
+GEMINI_TEXT_ARTIFACTS_DIR = os.path.join(STATIC_BASE_DIR, "gemini_text")
+os.makedirs(WISEAD_ARTIFACTS_DIR, exist_ok=True)
+os.makedirs(GEMINI_FRAMES_ARTIFACTS_DIR, exist_ok=True)
+os.makedirs(GEMINI_TEXT_ARTIFACTS_DIR, exist_ok=True)
 
 def get_s3_video_url(scenario_id: int, video_key: str = None) -> str:
     """从S3获取视频的预签名URL"""
@@ -1158,9 +1171,20 @@ def load_imu_data_from_s3(s3_url):
         
         s3_client = boto3.client('s3')
         response = s3_client.get_object(Bucket=bucket, Key=key)
-        
-        # 读取parquet数据
-        df = pd.read_parquet(BytesIO(response['Body'].read()))
+
+        # 读取parquet数据（更健壮：fastparquet -> pyarrow.parquet -> pyarrow 引擎）
+        raw = BytesIO(response['Body'].read())
+        try:
+            df = pd.read_parquet(raw, engine='fastparquet')
+        except Exception:
+            try:
+                raw.seek(0)
+                import pyarrow.parquet as pq  # 延迟导入
+                table = pq.read_table(raw)
+                df = table.to_pandas()
+            except Exception:
+                raw.seek(0)
+                df = pd.read_parquet(raw, engine='pyarrow')
         
         print(f"📊 IMU data shape: {df.shape}")
         print(f"📊 IMU data columns: {list(df.columns)}")
@@ -1259,13 +1283,22 @@ async def extract_gps_data(request: dict):
         print(f"📦 Bucket: {bucket_name}")
         print(f"🔑 Key: {key}")
         
-        # 使用S3ParquetManager读取parquet文件
-        from s3_utils import S3ParquetManager
-        s3_manager = S3ParquetManager(bucket_name)
-        
+        # 直接使用 boto3 + BytesIO 读取 parquet（与 IMU 同路径，避免 s3fs 差异）
         try:
-            # 读取parquet文件
-            df = s3_manager.load_parquet(key)
+            s3 = boto3.client('s3')
+            obj = s3.get_object(Bucket=bucket_name, Key=key)
+            raw = BytesIO(obj['Body'].read())
+            try:
+                df = pd.read_parquet(raw, engine='fastparquet')
+            except Exception:
+                try:
+                    raw.seek(0)
+                    import pyarrow.parquet as pq
+                    table = pq.read_table(raw)
+                    df = table.to_pandas()
+                except Exception:
+                    raw.seek(0)
+                    df = pd.read_parquet(raw, engine='pyarrow')
             print(f"✅ Successfully loaded parquet file with {len(df)} rows")
             print(f"📊 Columns: {list(df.columns)}")
             
@@ -1685,6 +1718,740 @@ class CropSegmentsRequest(BaseModel):
     data_links: dict
     # Optional: absolute start time of the scenario/video timeline (epoch seconds)
     scenario_start_time: Optional[float] = None
+
+
+# === VLM/Gemini description generation ===
+class AutoDescribeRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    # Optional context text to improve generation
+    context: Optional[str] = None
+    # Optional provider hint (e.g. gemini, wisead)
+    provider: Optional[str] = None
+
+class AutoDescribeResponse(BaseModel):
+    text: str
+    # Optional debug metadata for verification (not used by UI but helpful for auditing)
+    meta: Optional[dict] = None
+
+def _generate_description_with_gemini(prompt: str) -> str:
+    """Call Gemini (or other VLM) to generate a description text.
+    This uses google-generativeai as an example. Requires env var GOOGLE_API_KEY.
+    """
+    try:
+        import os
+        import google.generativeai as genai
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            # Fallback dummy text when key is not set
+            return "Automatic summary: " + prompt[:120]
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        res = model.generate_content(prompt)
+        return (res.text or "").strip() if res else ""
+    except Exception as e:
+        return f"Automatic summary unavailable: {e}"
+
+def _sample_frames_from_video(local_path: str, start_s: float, end_s: float, max_frames: int = 6):
+    """Extract up to max_frames evenly spaced frames between [start_s, end_s].
+
+    Returns a tuple (pil_images, meta) where pil_images is a list of PIL.Image
+    and meta contains fps, total_frames and chosen_indices for debugging.
+    """
+    try:
+        import cv2
+        from PIL import Image
+        import numpy as np
+
+        cap = cv2.VideoCapture(local_path)
+        if not cap.isOpened():
+            return [], {"error": "cv2.VideoCapture failed"}
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duration = total_frames / fps if fps > 0 else 0.0
+
+        # Clamp to valid range
+        if fps <= 0 or total_frames <= 0:
+            return [], {"error": "invalid video metadata", "fps": fps, "total_frames": total_frames}
+
+        start_s = max(0.0, float(start_s))
+        end_s = float(end_s) if float(end_s) > start_s else min(duration, start_s + 2.0)
+        start_frame = int(start_s * fps)
+        end_frame = int(min(end_s * fps, total_frames - 1))
+        if end_frame <= start_frame:
+            end_frame = min(start_frame + int(2 * fps), total_frames - 1)
+
+        frame_indices = np.linspace(start_frame, end_frame, num=max_frames, dtype=int)
+        images = []
+        chosen = []
+        for idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            # BGR -> RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(frame_rgb)
+            images.append(pil_image)
+            chosen.append(int(idx))
+
+        cap.release()
+        meta = {
+            "fps": float(fps),
+            "total_frames": int(total_frames),
+            "chosen_indices": chosen,
+            "window": [int(start_frame), int(end_frame)],
+        }
+        return images, meta
+    except Exception as e:
+        return [], {"error": f"frame_sampling_failed: {e}"}
+
+def _resolve_video_key_for_scenario(scenario_id: int) -> Optional[str]:
+    """Best-effort: read data_links.video.front from DB, else default key."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        cur = conn.cursor()
+        cur.execute("SELECT data_links FROM public.dmp WHERE id = %s", (scenario_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        data_links = row[0]
+        video_key = None
+        if isinstance(data_links, dict):
+            video_data = data_links.get("video") if data_links else None
+            if isinstance(video_data, dict):
+                front_url = video_data.get("front")
+                if isinstance(front_url, str) and front_url.startswith("s3://"):
+                    parts = front_url.split("/")
+                    if len(parts) >= 4:
+                        video_key = "/".join(parts[3:])
+        if not video_key:
+            video_key = f"scenarios/scenario_{scenario_id}.mp4"
+        return video_key
+    except Exception:
+        return None
+
+def _clip_segment(local_video_path: str, start_s: float, end_s: float) -> Optional[str]:
+    """Create a temporary MP4 clip for [start_s, end_s] from a local video file.
+
+    Returns the path to the temporary clip, or None if clipping failed.
+    """
+    try:
+        import tempfile
+        import subprocess
+        import os
+
+        start_s = max(0.0, float(start_s))
+        duration = max(0.0, float(end_s) - float(start_s))
+        if duration <= 0.0:
+            duration = 2.0  # minimal fallback window
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            clip_path = tmp.name
+
+        # Use stream copy when possible to be fast
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", str(start_s),
+            "-i", local_video_path,
+            "-t", str(duration),
+            "-c", "copy",
+            clip_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception:
+            # Retry with re-encode if stream copy fails (some containers/codecs require it)
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-ss", str(start_s),
+                "-i", local_video_path,
+                "-t", str(duration),
+                "-vcodec", "libx264",
+                "-preset", "veryfast",
+                "-acodec", "aac",
+                clip_path,
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        return clip_path if os.path.exists(clip_path) else None
+    except Exception:
+        return None
+
+def _describe_with_wisead_clip(req: "AutoDescribeRequest", base_prompt: str) -> Tuple[Optional[str], dict]:  # type: ignore[name-defined]
+    """End-to-end: resolve video → clip segment → POST to WiseAD → return text.
+
+    Returns (text, meta). text may be None if any step fails.
+    """
+    import os
+    import json
+    import tempfile
+    import boto3
+    import requests
+
+    meta: dict = {"mode": "wisead"}
+
+    # 1) Resolve and download the full video locally
+    video_key = _resolve_video_key_for_scenario(req.scenario_id)
+    local_path = None
+    try:
+        if video_key:
+            ensure_download_dir()
+            local_filename = f"scenario_{req.scenario_id}.mp4"
+            local_path = os.path.join(DOWNLOAD_DIR, local_filename)
+            if not os.path.exists(local_path):
+                s3 = boto3.client('s3')
+                s3.download_file(S3_BUCKET, video_key, local_path)
+    except Exception:
+        local_path = None
+
+    if not local_path or not os.path.exists(local_path):
+        meta["error"] = "download_failed"
+        return None, meta
+
+    # 2) Clip the selected segment to a temp file
+    clip_path = _clip_segment(local_path, req.start_time, req.end_time)
+    if not clip_path or not os.path.exists(clip_path):
+        meta["error"] = "clip_failed"
+        return None, meta
+
+    # 3) POST to WiseAD external API
+    wisead_base = os.environ.get("WISEAD_API_BASE") or os.environ.get("REACT_APP_WISEAD_API") or "http://127.0.0.1:9009"
+    url = f"{wisead_base.rstrip('/')}/infer/video"
+    try:
+        with open(clip_path, "rb") as f:
+            files = {"video": ("segment.mp4", f, "video/mp4")}
+            # Use a concise, strict prompt to avoid repetitive/negative enumerations
+            dur = max(0.0, float(req.end_time) - float(req.start_time))
+            wisead_prompt = (
+                "In one short sentence, describe the main driving maneuver visible in this video segment. "
+                "Focus on the ego vehicle action (e.g., going straight, turning, lane change, stopping). "
+                "Do NOT list absent objects, do NOT repeat phrases, and do NOT guess beyond what is visible. "
+                "English only, max 20 words."
+            )
+            data = {
+                "prompt": wisead_prompt,
+                # Keep parameters compatible with the existing WiseAD client
+                "method": "fps",
+                "fps": "1",
+            }
+            resp = requests.post(url, files=files, data=data, timeout=120)
+            resp.raise_for_status()
+            payload = resp.json()
+            text = None
+            if isinstance(payload, dict):
+                text = payload.get("result") or payload.get("description") or payload.get("text")
+            if text:
+                # Save artifacts for debugging: prompt and raw response
+                try:
+                    run_id = uuid.uuid4().hex[:8]
+                    folder = os.path.join(WISEAD_ARTIFACTS_DIR, f"scenario_{req.scenario_id}_{run_id}")
+                    os.makedirs(folder, exist_ok=True)
+                    # Save prompt
+                    with open(os.path.join(folder, "prompt.txt"), "w", encoding="utf-8") as pf:
+                        pf.write(wisead_prompt)
+                    # Save raw json
+                    with open(os.path.join(folder, "response.json"), "w", encoding="utf-8") as rf:
+                        rf.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                    # Copy clip for reference
+                    try:
+                        shutil.copyfile(clip_path, os.path.join(folder, "segment.mp4"))
+                    except Exception:
+                        pass
+                    # Create a zip to allow straight download to browser Downloads
+                    try:
+                        zip_path = os.path.join(folder, "artifacts.zip")
+                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            for fname in ("prompt.txt", "response.json", "segment.mp4"):
+                                fpath = os.path.join(folder, fname)
+                                if os.path.exists(fpath):
+                                    zf.write(fpath, arcname=fname)
+                    except Exception:
+                        zip_path = None
+                    meta.update({
+                        "provider": "wisead",
+                        "artifacts_url": f"/static/wisead/{os.path.basename(folder)}",
+                        "zip_url": f"/static/wisead/{os.path.basename(folder)}/artifacts.zip",
+                        "clip": "segment.mp4",
+                        "prompt": "prompt.txt",
+                        "response": "response.json",
+                    })
+                except Exception:
+                    meta.update({"provider": "wisead"})
+                return str(text), meta
+            meta["error"] = "empty_result"
+            return None, meta
+    except Exception as e:
+        meta["error"] = f"wisead_request_failed: {e}"
+        return None, meta
+    finally:
+        try:
+            os.remove(clip_path)
+        except Exception:
+            pass
+
+@router.post("/auto-describe", response_model=AutoDescribeResponse)
+async def auto_describe(req: AutoDescribeRequest) -> AutoDescribeResponse:
+    """Generate a short description for a selected time range.
+
+    Default behavior (enhanced):
+      1) 尝试解析并下载场景视频；
+      2) 在所选时间窗内抽取少量关键帧；
+      3) 将提示词 + 抽帧送入 Gemini 1.5（多模态）获取描述；
+      4) 若任一步失败，退化为文本提示词。
+    """
+    try:
+        duration = max(0.0, req.end_time - req.start_time)
+        base_prompt = (
+            "You will be given several frames extracted from a driving video segment.\n"
+            "Describe what happens based ONLY on the visual content. Do not invent details that are not visible.\n"
+            "Requirements:\n"
+            "- Output in English, in 1–2 short sentences.\n"
+            "- Briefly describe the main event(s): e.g., going straight, turning, lane change, stop/start, acceleration/deceleration, collision, bump, presence of vehicles/pedestrians, etc.\n"
+            "- If uncertain, say it is uncertain.\n"
+            f"Scenario ID: {req.scenario_id}.\n"
+            f"Time range: start {req.start_time:.2f}s, end {req.end_time:.2f}s, duration {duration:.2f}s.\n"
+            "Now output the description text only:"
+        )
+        # Optional: enrich with telemetry (avg speed) by reading console_trip around the window
+        telemetry_context = ""
+        try:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT data_links, start_time FROM public.dmp WHERE id = %s", (req.scenario_id,))
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+                if row:
+                    data_links, scenario_start = row
+                    console_trip_url = None
+                    if isinstance(data_links, dict):
+                        console_trip_url = data_links.get("trip", {}).get("console_trip")
+                    if console_trip_url and scenario_start is not None:
+                        # Compute absolute timestamps for the selection window
+                        abs_start = float(scenario_start) + float(req.start_time)
+                        abs_end = float(scenario_start) + float(req.end_time)
+                        # Load parquet and compute average speed in window
+                        import s3fs
+                        import pandas as pd
+                        fs = s3fs.S3FileSystem()
+                        df = pd.read_parquet(console_trip_url, filesystem=fs)
+                        ts_col = None
+                        for col in df.columns:
+                            if str(col).lower() in ("timestamp",) or any(k in str(col).lower() for k in ["timestamp", "time", "ts"]):
+                                ts_col = col
+                                break
+                        if ts_col is not None:
+                            # ensure numeric
+                            if df[ts_col].dtype == object:
+                                df[ts_col] = pd.to_numeric(df[ts_col], errors='coerce')
+                            window = df[(df[ts_col] >= abs_start) & (df[ts_col] <= abs_end)].copy()
+                            speed_col = None
+                            for col in window.columns:
+                                if "speed" in str(col).lower():
+                                    speed_col = col
+                                    break
+                            if speed_col is not None and len(window) > 0:
+                                try:
+                                    avg_speed = float(window[speed_col].astype(float).mean())
+                                    telemetry_context = f"telemetry: avg_speed={avg_speed:.2f} (units as stored), samples={len(window)}"
+                                except Exception:
+                                    pass
+        except Exception:
+            # Non-fatal; continue without telemetry
+            pass
+
+        # 我们不再注入 label/events 等上下文，避免提示词泄漏影响判断；
+        # 如需附加遥测，可在此合并（目前默认关闭）。
+
+        # If user explicitly selected WiseAD, try WiseAD first with full-segment clip
+        text = None
+        debug_meta = {"mode": "text-only"}
+        provider_hint = (getattr(req, 'provider', None) or "gemini").lower()
+        if provider_hint == "wisead":
+            try:
+                wisead_text, meta = _describe_with_wisead_clip(req, base_prompt)
+                if wisead_text:
+                    return AutoDescribeResponse(text=wisead_text, meta=meta)
+                # If WiseAD path fails, continue to Gemini below
+                debug_meta = meta or {"mode": "wisead"}
+            except Exception:
+                # ignore and fall back
+                pass
+
+        # 1) Try multimodal (frames) with Gemini
+        try:
+            import os
+            import google.generativeai as genai
+            from io import BytesIO
+            from PIL import Image
+
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel("gemini-1.5-flash")
+
+                # Resolve and download video locally
+                video_key = _resolve_video_key_for_scenario(req.scenario_id)
+                local_path = None
+                if video_key:
+                    ensure_download_dir()
+                    local_filename = f"scenario_{req.scenario_id}.mp4"
+                    local_path = os.path.join(DOWNLOAD_DIR, local_filename)
+                    if not os.path.exists(local_path):
+                        try:
+                            s3 = boto3.client('s3')
+                            s3.download_file(S3_BUCKET, video_key, local_path)
+                        except Exception:
+                            local_path = None
+
+                images = []
+                frame_meta = {}
+                if local_path and os.path.exists(local_path):
+                    images, frame_meta = _sample_frames_from_video(local_path, req.start_time, req.end_time, max_frames=6)
+
+                if images:
+                    # Prepare artifact folder first so we keep frames even if VLM call fails
+                    run_id = uuid.uuid4().hex[:8]
+                    folder = os.path.join(GEMINI_FRAMES_ARTIFACTS_DIR, f"scenario_{req.scenario_id}_{run_id}")
+                    try:
+                        os.makedirs(folder, exist_ok=True)
+                        with open(os.path.join(folder, "prompt.txt"), "w", encoding="utf-8") as pf:
+                            pf.write(base_prompt)
+                        # Encode frames to JPEG bytes once; reuse for saving and sending
+                        from io import BytesIO
+                        import hashlib
+                        image_parts = []
+                        frame_hashes = []
+                        for i, im in enumerate(images):
+                            try:
+                                buf = BytesIO()
+                                im.save(buf, format="JPEG", quality=92)
+                                data = buf.getvalue()
+                                # Save file using the same bytes
+                                out = os.path.join(folder, f"frame_{i+1}.jpg")
+                                with open(out, "wb") as f:
+                                    f.write(data)
+                                # Prepare part for Gemini using exact bytes
+                                image_parts.append({"mime_type": "image/jpeg", "data": data})
+                                frame_hashes.append(hashlib.sha256(data).hexdigest())
+                            except Exception:
+                                pass
+                    except Exception:
+                        folder = None
+
+                    # Prepare parts: prompt + images
+                    parts = [base_prompt]
+                    try:
+                        for p in image_parts:
+                            parts.append(p)
+                    except Exception:
+                        # fallback to PIL.Image list if bytes parts failed to build
+                        for img in images:
+                            parts.append(img)
+                    try:
+                        res = model.generate_content(parts)
+                        candidate = (res.text or "").strip() if res else ""
+                    except Exception as e:
+                        candidate = ""
+                        # record error
+                        debug_meta = {"mode": "frames_failed", **frame_meta, "frames_used": len(images), "error": str(e)}
+                        if folder:
+                            try:
+                                with open(os.path.join(folder, "response.json"), "w", encoding="utf-8") as rf:
+                                    rf.write(json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))
+                            except Exception:
+                                pass
+
+                    if candidate:
+                        text = candidate
+                        debug_meta = {"mode": "frames", **frame_meta, "frames_used": len(images)}
+                        if folder:
+                            try:
+                                with open(os.path.join(folder, "response.json"), "w", encoding="utf-8") as rf:
+                                    rf.write(json.dumps({"text": candidate}, ensure_ascii=False, indent=2))
+                            except Exception:
+                                pass
+                    # zip artifacts if we created a folder
+                    if folder:
+                        try:
+                            zip_path = os.path.join(folder, "artifacts.zip")
+                            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                                pt = os.path.join(folder, "prompt.txt"); rt = os.path.join(folder, "response.json")
+                                if os.path.exists(pt): zf.write(pt, arcname="prompt.txt")
+                                if os.path.exists(rt): zf.write(rt, arcname="response.json")
+                                for i in range(len(images)):
+                                    f = os.path.join(folder, f"frame_{i+1}.jpg")
+                                    if os.path.exists(f):
+                                        zf.write(f, arcname=f"frame_{i+1}.jpg")
+                            debug_meta.update({
+                                "artifacts_url": f"/static/gemini_frames/{os.path.basename(folder)}",
+                                "zip_url": f"/static/gemini_frames/{os.path.basename(folder)}/artifacts.zip",
+                                "frame_sha256": frame_hashes if 'frame_hashes' in locals() else None,
+                            })
+                        except Exception:
+                            pass
+                else:
+                    # record why frames path didn't proceed
+                    debug_meta = {
+                        "mode": "frames_attempted",
+                        "frames_used": 0,
+                        "video_key": video_key,
+                        "local_path": local_path,
+                        **({"frame_meta": frame_meta} if frame_meta else {}),
+                    }
+        except Exception:
+            # swallow and fallback to text-only below
+            pass
+
+        # 2) Fallback to text-only if frames path failed
+        if not text:
+            text = _generate_description_with_gemini(base_prompt)
+            if not isinstance(debug_meta, dict) or not debug_meta:
+                debug_meta = {"mode": "text-only", "provider": "gemini"}
+            else:
+                debug_meta.update({"provider": "gemini"})
+            # Save minimal artifacts for text-only case (prompt + response)
+            try:
+                run_id = uuid.uuid4().hex[:8]
+                folder = os.path.join(GEMINI_TEXT_ARTIFACTS_DIR, f"scenario_{req.scenario_id}_{run_id}")
+                os.makedirs(folder, exist_ok=True)
+                with open(os.path.join(folder, "prompt.txt"), "w", encoding="utf-8") as pf:
+                    pf.write(base_prompt)
+                with open(os.path.join(folder, "response.json"), "w", encoding="utf-8") as rf:
+                    rf.write(json.dumps({"text": text}, ensure_ascii=False, indent=2))
+                try:
+                    zip_path = os.path.join(folder, "artifacts.zip")
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        zf.write(os.path.join(folder, "prompt.txt"), arcname="prompt.txt")
+                        zf.write(os.path.join(folder, "response.json"), arcname="response.json")
+                except Exception:
+                    pass
+                debug_meta.update({
+                    "artifacts_url": f"/static/gemini_text/{os.path.basename(folder)}",
+                    "zip_url": f"/static/gemini_text/{os.path.basename(folder)}/artifacts.zip",
+                })
+            except Exception:
+                pass
+        if not text:
+            text = "Automatic summary could not be generated."
+        return AutoDescribeResponse(text=text, meta=debug_meta)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"auto-describe failed: {e}")
+
+# === Save segment as NPZ ===
+class SaveNpzRequest(BaseModel):
+    scenario_id: int
+    start_time: float
+    end_time: float
+    label: Optional[str] = None
+    description: Optional[str] = None
+    data_links: dict
+
+@router.post("/save-npz")
+async def save_segment_as_npz(req: SaveNpzRequest):
+    """Create a NumPy .npz file with our schema.
+
+    Arrays in the archive:
+    - maneuver_type: 0-D unicode string (e.g., "right-lane-change")
+    - start: 0-D float64 (epoch seconds, segment start)
+    - end: 0-D float64 (epoch seconds, segment end)
+    - imu_data: 0-D object → a dict of plain Python lists
+    - gps_data: 0-D object → a dict of plain Python lists
+    - metadata: 0-D object → a dict with strings/URIs (also包含字符串格式 start/end)
+    """
+    try:
+        # 1) Fetch basic identifiers (org_id, key_id, vin)
+        conn = get_db_connection()
+        org_id = None
+        key_id = None
+        vin = None
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT org_id, key_id, vin FROM public.dmp WHERE id = %s", (req.scenario_id,))
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                org_id, key_id, vin = row
+
+        # 2) Resolve URIs from data_links
+        imu_accel_uri = None
+        imu_gyro_uri = None
+        gps_uri = None
+        video_uri_list = []
+        if isinstance(req.data_links, dict):
+            imu_links = req.data_links.get("imu") or {}
+            if isinstance(imu_links, dict):
+                imu_accel_uri = imu_links.get("accel")
+                imu_gyro_uri = imu_links.get("gyro")
+            trip_links = req.data_links.get("trip") or {}
+            if isinstance(trip_links, dict):
+                gps_uri = trip_links.get("console_trip") or trip_links.get("fleet_trip")
+            video_links = req.data_links.get("video") or {}
+            if isinstance(video_links, dict):
+                for _, v in video_links.items():
+                    if v:
+                        video_uri_list.append(v)
+
+        # 3) Format start/end as strings and compute maneuver_time (midpoint)
+        try:
+            start_fmt = pd.to_datetime(req.start_time, unit='s', utc=True).tz_convert('UTC').strftime('%Y-%m-%d_%H-%M-%S')
+        except Exception:
+            start_fmt = str(req.start_time)
+        try:
+            end_fmt = pd.to_datetime(req.end_time, unit='s', utc=True).tz_convert('UTC').strftime('%Y-%m-%d_%H-%M-%S')
+        except Exception:
+            end_fmt = str(req.end_time)
+        start_epoch = float(req.start_time)
+        end_epoch = float(req.end_time)
+        maneuver_type = (req.label or 'maneuver').strip().replace(' ', '-').lower()
+
+        # 4) Collect IMU arrays (best-effort; empty if unavailable)
+        import numpy as np
+        def to_array(lst, key, dtype=float):
+            try:
+                return np.array([float(p.get(key, 0)) for p in lst], dtype=dtype)
+            except Exception:
+                return np.array([], dtype=dtype)
+
+        lr_acc = np.array([]); bf_acc = np.array([]); vert_acc = np.array([])
+        lr_w = np.array([]); bf_w = np.array([]); vert_w = np.array([])
+        imu_ts = np.array([])
+        try:
+            if imu_accel_uri:
+                accel_points = load_imu_data_from_s3(imu_accel_uri)  # list of {timestamp,x,y,z}
+                # Crop by selected time window
+                accel_points = [p for p in accel_points if start_epoch <= float(p.get('timestamp', 0)) <= end_epoch]
+                if accel_points:
+                    imu_ts = to_array(accel_points, 'timestamp')
+                    lr_acc = to_array(accel_points, 'x')
+                    bf_acc = to_array(accel_points, 'y')
+                    vert_acc = to_array(accel_points, 'z')
+        except Exception:
+            pass
+        try:
+            if imu_gyro_uri:
+                gyro_points = load_imu_data_from_s3(imu_gyro_uri)
+                # Crop by selected time window
+                gyro_points = [p for p in gyro_points if start_epoch <= float(p.get('timestamp', 0)) <= end_epoch]
+                if gyro_points and imu_ts.size == 0:
+                    imu_ts = to_array(gyro_points, 'timestamp')
+                if gyro_points:
+                    lr_w = to_array(gyro_points, 'x')
+                    bf_w = to_array(gyro_points, 'y')
+                    vert_w = to_array(gyro_points, 'z')
+        except Exception:
+            pass
+
+        # Align lengths rudimentarily to the smallest non-zero length
+        lengths = [arr.size for arr in [imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w] if arr.size > 0]
+        if lengths:
+            n = min(lengths)
+            def trim(a):
+                return a[:n] if a.size >= n and n > 0 else a
+            imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w = [trim(a) for a in [imu_ts, lr_acc, bf_acc, vert_acc, lr_w, bf_w, vert_w]]
+
+        # Convert to plain Python lists to avoid pickling NumPy internals
+        imu_obj = {
+            'timestamp': imu_ts.tolist(),
+            'lr_acc': lr_acc.tolist(), 'bf_acc': bf_acc.tolist(), 'vert_acc': vert_acc.tolist(),
+            'lr_w': lr_w.tolist(), 'bf_w': bf_w.tolist(), 'vert_w': vert_w.tolist(),
+        }
+
+        # 5) Collect GPS arrays (best-effort)
+        gps_obj = { 'timestamp': [],
+                    'latitude': [],
+                    'longitude': [],
+                    'speed': [],
+                    'course': [] }
+        try:
+            if gps_uri and gps_uri.startswith('s3://'):
+                # Use S3ParquetManager for convenience
+                from s3_utils import S3ParquetManager
+                parts = gps_uri.replace('s3://','').split('/',1)
+                if len(parts) == 2:
+                    bucket, key = parts
+                    s3mgr = S3ParquetManager(bucket)
+                    df = s3mgr.load_parquet(key)
+                    # Identify columns
+                    ts_col = None; lat_col=None; lon_col=None; spd_col=None; crs_col=None
+                    for c in df.columns:
+                        lc = str(c).lower()
+                        if ts_col is None and any(k in lc for k in ['timestamp','time','ts']): ts_col=c
+                        if lat_col is None and 'lat' in lc: lat_col=c
+                        if lon_col is None and ('lon' in lc or 'lng' in lc): lon_col=c
+                        if spd_col is None and 'speed' in lc: spd_col=c
+                        if crs_col is None and ('course' in lc or 'heading' in lc or 'yaw' in lc): crs_col=c
+                    if ts_col is not None:
+                        # Crop by selected time window
+                        ts_series = pd.to_numeric(df[ts_col], errors='coerce').astype(float)
+                        window = df[(ts_series >= start_epoch) & (ts_series <= end_epoch)].copy()
+                        ts_vals = ts_series[(ts_series >= start_epoch) & (ts_series <= end_epoch)].tolist()
+                        gps_obj['timestamp'] = ts_vals
+                    else:
+                        window = df
+                    if lat_col is not None:
+                        gps_obj['latitude'] = window[lat_col].astype(str).tolist()
+                    if lon_col is not None:
+                        gps_obj['longitude'] = window[lon_col].astype(str).tolist()
+                    if spd_col is not None:
+                        gps_obj['speed'] = pd.to_numeric(window[spd_col], errors='coerce').astype(float).tolist()
+                    if crs_col is not None:
+                        gps_obj['course'] = pd.to_numeric(window[crs_col], errors='coerce').astype(float).tolist()
+        except Exception:
+            pass
+
+        # 6) Compose metadata dictionary
+        metadata = {
+            'imu_org_id': org_id or '',
+            'imu_k3y_id': key_id or '',
+            'tesla_org_id': org_id or '',
+            'tesla_vehicle_id': vin,
+            'gps_source': 'console_trip' if gps_uri else '',
+            'start': start_fmt,
+            'end': end_fmt,
+            'imu_accel_uri': imu_accel_uri or '',
+            'imu_gyro_uri': imu_gyro_uri or '',
+            'gps_uri': gps_uri or '',
+            'video_uri': list(video_uri_list),
+            'notes': (req.description or ''),
+            'location': '',
+        }
+
+        # 7) Build NPZ payload in the requested structure
+        import numpy as np
+        def box0(obj):
+            arr = np.empty((), dtype=object)
+            arr[()] = obj
+            return arr
+        payload = {
+            'maneuver_type': np.array(maneuver_type),
+            'maneuver_time': box0({'start': float(start_epoch), 'end': float(end_epoch)}),
+            'imu_data': box0(imu_obj),
+            'gps_data': box0(gps_obj),
+            'metadata': box0(metadata),
+        }
+
+        # 8) Save to buffer and return
+        buffer = BytesIO()
+        np.savez_compressed(buffer, **payload)
+        buffer.seek(0)
+
+        filename = f"segment_{req.scenario_id}_{start_fmt}_{end_fmt}.npz"
+        headers = { 'Content-Disposition': f'attachment; filename="{filename}"' }
+        return Response(content=buffer.read(), media_type='application/octet-stream', headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"save-npz failed: {e}")
 
 @router.post("/crop-data")
 async def crop_data_by_time_range(request: CropDataRequest):
