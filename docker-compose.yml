@@ -17,7 +17,7 @@ services:
       # WiseAD inference service base URL (host Docker -> local machine)
       - WISEAD_API_BASE=http://host.docker.internal:9008
       # External inference server base URL for yolov10/ego_lane_plus/depth_anything_v2
-      - INFERENCE_BASE=${INFERENCE_BASE:-http://host.docker.internal:18085}
+      - INFERENCE_BASE=http://35.89.12.100:8085
     volumes:
       - annotation-platform-backend-volume:/app/data
     networks:
