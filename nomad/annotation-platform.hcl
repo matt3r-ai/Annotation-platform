@@ -130,6 +130,11 @@ job "annotation-platform" {
 
       vault {}
 
+      # Inject external inference server base URL
+      env {
+        INFERENCE_BASE = "http://54.184.185.186:8085"
+      }
+
       template {
         data = <<EOH
 GOOGLE_API_KEY={{with secret "kv_hyades/data/nomad/jobs/annotation-plaltform/google"}}{{.Data.data.google_api_key}}{{end}}
