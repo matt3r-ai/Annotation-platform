@@ -75,6 +75,21 @@ const HomePage = () => {
                 </button>
               </div>
 
+              {/* Ego Lane Annotation */}
+              <div className="tool-card active">
+                <div className="tool-icon">🛣️</div>
+                <h3 className="tool-title">Ego Lane Annotation</h3>
+                <p className="tool-description">
+                  Extract frames and annotate ego lanes with autofill and brush/eraser editing.
+                </p>
+                <button 
+                  className="tool-button"
+                  onClick={() => handleToolClick('/ego-lane-annotation')}
+                >
+                  Launch Tool
+                </button>
+              </div>
+
               {/* Scenario Analysis */}
               <div className="tool-card">
                 <div className="tool-icon">🔍</div>
