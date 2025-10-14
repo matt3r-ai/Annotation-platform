@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 from typing import List, Optional
+import io
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
@@ -139,3 +140,53 @@ async def detect_yolov8(
     )
 
 
+
+# New: Run YOLO detection on uploaded images (local folder semi-auto)
+@router.post("/detect-images")
+async def detect_on_images(
+    files: list[UploadFile] = File(...),
+    score_threshold: float = Form(0.3),
+):
+    """Accept multiple image files, run YOLO and return detections per image.
+
+    Response format:
+      {
+        "results": [
+          { "filename": str, "boxes": [ {"x": int, "y": int, "w": int, "h": int, "conf": float, "cls": int} ] }
+        ]
+      }
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+        from ultralytics import YOLO
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Missing dependencies for YOLO: {e}")
+
+    try:
+        yolo = YOLO("yolov8n.pt")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Load YOLO model failed: {e}")
+
+    results_out = []
+    for f in files:
+        name = f.filename or "image.jpg"
+        data = await f.read()
+        try:
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+        except Exception:
+            # Skip non-image
+            continue
+        import numpy as np  # ensure available in scope if not imported above
+        res = yolo.predict(np.array(img), verbose=False, conf=float(score_threshold))
+        r0 = res[0]
+        boxes = []
+        if hasattr(r0, 'boxes') and r0.boxes is not None:
+            for b in r0.boxes:
+                x1, y1, x2, y2 = [int(v) for v in b.xyxy[0].tolist()]
+                conf = float(b.conf[0].item()) if hasattr(b, 'conf') else 0.0
+                cls_id = int(b.cls[0].item()) if hasattr(b, 'cls') else -1
+                boxes.append({"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1, "conf": conf, "cls": cls_id})
+        results_out.append({"filename": name, "boxes": boxes})
+
+    return {"results": results_out}
