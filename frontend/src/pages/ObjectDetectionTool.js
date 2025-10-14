@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import ReactDOM from 'react-dom';
 import { s3VideoAPI } from '../services/api';
 import { runYolov10OnS3 } from '../services/v2eApi';
@@ -10,6 +12,10 @@ const ObjectDetectionTool = () => {
   const [viewMode, setViewMode] = useState('annotate'); // 'fetch' | 'annotate'
   const [localFile, setLocalFile] = useState(null);
   const [localVideoUrl, setLocalVideoUrl] = useState('');
+  const [localFolderFiles, setLocalFolderFiles] = useState([]); // [{type:'image'|'txt', file, name, url}]
+  const [localImageList, setLocalImageList] = useState([]); // [{name, file, url, width, height}]
+  const folderInputRef = React.useRef(null);
+  const [frameTags, setFrameTags] = useState({}); // {frameIndex: 'day,night'}
   const [orgIds, setOrgIds] = useState([]);
   const [keyIds, setKeyIds] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState('');
@@ -26,7 +32,22 @@ const ObjectDetectionTool = () => {
   // 标注相关状态
   const [boundingBoxes, setBoundingBoxes] = useState({}); // {frameIndex: [boxes]}
   // const [selectedBox, setSelectedBox] = useState(null); // <-- DELETE THIS LINE
-  const [labels, setLabels] = useState(['car', 'truck', 'bus', 'person', 'bicycle', 'motorcycle', 'traffic_light', 'stop_sign']);
+  // Class map (id -> name) provided by teammate
+  const classIdToName = {
+    0: 'person',
+    1: 'light-vehicle',
+    2: 'heavy-vehicle',
+    3: 'bike',
+    4: 'traffic-light',
+    5: 'traffic-sign',
+    6: 'construction',
+    7: 'train',
+    8: 'animal',
+    9: 'emergency-vehicle',
+    10: 'shopping-cart',
+  };
+  const nameToClassId = Object.fromEntries(Object.entries(classIdToName).map(([id, name]) => [name, Number(id)]));
+  const [labels, setLabels] = useState(Object.values(classIdToName));
   const [trackingIds, setTrackingIds] = useState({}); // {boxId: trackingId}
   const [annotations, setAnnotations] = useState({}); // {frameIndex: [{x1,x2,y1,y2,label,trackingId}]}
 
@@ -614,6 +635,38 @@ const ObjectDetectionTool = () => {
     }
   };
 
+  // Handle local folder upload: read images only (txts imported via Import modal)
+  const handleLocalFolderChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    // Separate images and txts
+    const images = files.filter(f => /\.(jpg|jpeg|png)$/i.test(f.name));
+    setLocalFolderFiles(files);
+    // Prepare image list with dims
+    const imageItems = await Promise.all(images.map(f => new Promise((resolve) => {
+      const url = URL.createObjectURL(f);
+      const img = new Image();
+      img.onload = () => resolve({ name: f.name, file: f, url, width: img.naturalWidth, height: img.naturalHeight });
+      img.src = url;
+    })));
+    // Build frameUrls and initial boxes from YOLO per-image txts if present
+    const urls = imageItems.map(it => it.url);
+    setLocalImageList(imageItems);
+    setFrameUrls(urls);
+    setCurrentFrameIndex(0);
+    // Do not auto-import txts here; handled via Import modal
+    setFrameBoxes({});
+    setBoxes([]);
+    setViewMode('annotate');
+    // 清空并初始化帧标签
+    setFrameTags({});
+  };
+
+  function stem(filename) {
+    const i = filename.lastIndexOf('.');
+    return i >= 0 ? filename.slice(0, i) : filename;
+  }
+
 
 
   const handleExportAnnotations = () => {
@@ -803,19 +856,12 @@ const ObjectDetectionTool = () => {
   };
 
   // label 到 classnumber 的映射
-  const labelMap = {
-    car: 0,
-    truck: 1,
-    bus: 2,
-    person: 3,
-    bicycle: 4,
-    motorcycle: 5,
-    traffic_light: 6,
-    stop_sign: 7
-  };
-  const classToLabel = Object.entries(labelMap).reduce((acc, [k, v]) => { acc[v] = k; return acc; }, {});
+  // New mapping helpers
+  const classToLabel = classId => classIdToName[classId] || '';
 
   // 导出为TXT
+  const [exportFormat, setExportFormat] = useState('combined'); // 'combined' | 'yolo_per_image'
+
   const handleExportFrameBoxesTxt = () => {
     let lines = [];
     let lastBoxes = [];
@@ -827,19 +873,44 @@ const ObjectDetectionTool = () => {
         lastBoxes = boxes;
       }
       (boxes || []).forEach(box => {
-        const classnumber = labelMap[box.label] !== undefined ? labelMap[box.label] : -1;
-        lines.push(
-          `${i}\t${Math.round(box.x)} ${Math.round(box.x + box.w)} ${Math.round(box.y)} ${Math.round(box.y + box.h)} ${classnumber} ${box.trackingId || -1}`
-        );
+        const classnumber = (typeof box.classId === 'number') ? box.classId : (nameToClassId[box.label] ?? -1);
+        if (exportFormat === 'combined') {
+          lines.push(`${i}\t${Math.round(box.x)} ${Math.round(box.x + box.w)} ${Math.round(box.y)} ${Math.round(box.y + box.h)} ${classnumber} ${box.trackingId || -1}`);
+        }
       });
     }
-    const txtContent = lines.join('\n');
-    const blob = new Blob([txtContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'annotations.txt';
-    a.click();
+    if (exportFormat === 'combined') {
+      const txtContent = lines.join('\n');
+      const blob = new Blob([txtContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'annotations.txt';
+      a.click();
+    } else {
+      // YOLO per-image export: bundle all .txt into one ZIP
+      const zip = new JSZip();
+      for (let i = 0; i < frameUrls.length; i++) {
+        const it = localImageList[i];
+        const boxes = frameBoxes[i] || [];
+        if (!it) continue;
+        const tagsStr = String(frameTags[i] || '').trim();
+        const linesTxt = boxes.map(b => {
+          const cls = (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1);
+          const cx = (b.x + b.w / 2) / it.width;
+          const cy = (b.y + b.h / 2) / it.height;
+          const ww = b.w / it.width;
+          const hh = b.h / it.height;
+          const base = `${cls} ${cx.toFixed(6)} ${cy.toFixed(6)} ${ww.toFixed(6)} ${hh.toFixed(6)}`;
+          const withTrack = `${base} ${b.trackingId || -1}`;
+          return tagsStr ? `${withTrack} ${tagsStr}` : withTrack;
+        }).join('\n');
+        zip.file(`${stem(it.name)}.txt`, linesTxt);
+      }
+      zip.generateAsync({ type: 'blob' }).then((blob) => {
+        saveAs(blob, 'annotations_yolo.zip');
+      });
+    }
   };
 
   // 导入TXT功能
@@ -854,6 +925,54 @@ const ObjectDetectionTool = () => {
       };
       reader.readAsText(file);
     }
+  };
+  
+  // New: Import a folder of YOLO per-image txt files and map by filename stem
+  const handleImportTxtFolder = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const txts = files.filter(f => /\.txt$/i.test(f.name));
+    const byStem = {};
+    await Promise.all(txts.map(f => new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => { byStem[stem(f.name)] = String(reader.result || ''); resolve(); };
+      reader.readAsText(f);
+    })));
+    // Build boxes per frame based on localImageList
+    const newFrameBoxes = {};
+    const newFrameTags = { ...frameTags };
+    localImageList.forEach((img, idx) => {
+      const content = byStem[stem(img.name)];
+      if (!content) return;
+      const lines = content.split(/\r?\n/).filter(Boolean);
+      const list = [];
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        const cls = Number(parts[0]);
+        const cx = parseFloat(parts[1]);
+        const cy = parseFloat(parts[2]);
+        const w = parseFloat(parts[3]);
+        const h = parseFloat(parts[4]);
+        const x = (cx - w / 2) * img.width;
+        const y = (cy - h / 2) * img.height;
+        const pw = w * img.width;
+        const ph = h * img.height;
+        let trackingId = '';
+        if (parts.length >= 6) trackingId = parts[5];
+        // Optional tags after 6th token
+        if (parts.length > 6) {
+          const tags = parts.slice(6).join(' ');
+          newFrameTags[idx] = tags;
+        }
+        list.push({ id: Date.now() + Math.random(), x, y, w: pw, h: ph, label: classIdToName[cls] || '', classId: cls, trackingId });
+      }
+      if (list.length > 0) newFrameBoxes[idx] = list;
+    });
+    setFrameBoxes(prev => ({ ...prev, ...newFrameBoxes }));
+    if (newFrameBoxes[currentFrameIndex]) setBoxes(newFrameBoxes[currentFrameIndex]);
+    setFrameTags(newFrameTags);
+    setShowImport(false);
   };
   const handleImportFrameBoxesTxt = () => {
     const lines = importTxt.split(/\r?\n/).filter(Boolean);
@@ -907,7 +1026,7 @@ const ObjectDetectionTool = () => {
             <div className="selection-options">
               <div
                 className={`option-card${dataSource === 'local' ? ' active' : ''}`}
-                onClick={() => handleSelectDataSource('local')}
+                onClick={() => { handleSelectDataSource('local'); setTimeout(() => folderInputRef.current && folderInputRef.current.click(), 0); }}
               >
                 <div className="option-icon">📁</div>
                 <h3>Local Upload</h3>
@@ -924,10 +1043,22 @@ const ObjectDetectionTool = () => {
             </div>
             {/* Local file input */}
             {dataSource === 'local' && (
-              <div style={{ marginTop: 18 }}>
-                <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Select Video File</label>
-                <input type="file" accept="video/*" onChange={handleLocalFileChange} className="select-input" style={{ marginTop: 4 }} />
-              </div>
+              <>
+                {/* Hidden folder picker, triggered by clicking the Local Upload card */}
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleLocalFolderChange}
+                  style={{ display: 'none' }}
+                  webkitdirectory=""
+                  directory=""
+                />
+                <div style={{ marginTop: 18 }}>
+                  <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Or, select a video file</label>
+                  <input type="file" accept="video/*" onChange={handleLocalFileChange} className="select-input" style={{ marginTop: 4 }} />
+                </div>
+              </>
             )}
             {/* MCDB filter moved to center panel; nothing here in sidebar now for S3 */}
           </div>
@@ -1004,12 +1135,10 @@ const ObjectDetectionTool = () => {
           </div>
         </div>
           ) : (
-          /* 视频预览容器 */
+          /* 预览容器：优先显示已加载的帧（本地或S3），否则显示本地视频或提示 */
           <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
             <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {(dataSource === 'local' && localVideoUrl) ? (
-                <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
-              ) : (dataSource === 's3' && frameUrls.length > 0) ? (
+              {frameUrls.length > 0 ? (
                 <div style={{ position: 'relative', width: '100%', height: 'calc(100vh - 200px)', minHeight: '400px' }}>
                   <div
                     ref={canvasRef}
@@ -1139,9 +1268,11 @@ const ObjectDetectionTool = () => {
                     </div>
                   </div>
                 </div>
+              ) : (dataSource === 'local' && localVideoUrl) ? (
+                <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
               ) : (
                 <div style={{ color: '#888', textAlign: 'center', fontSize: 16 }}>
-                  Please select a video
+                  Please select a folder or video
                   {dataSource === 's3' && (
                     <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Use the Fetch Scenarios panel to select a video.</div>
                   )}
@@ -1174,14 +1305,15 @@ const ObjectDetectionTool = () => {
                 <div style={{ fontSize: 10, marginBottom: 4 }}>W: {Math.round(box.w)}</div>
                 <div style={{ fontSize: 10, marginBottom: 8 }}>H: {Math.round(box.h)}</div>
                 <div style={{ marginBottom: 8 }}>
-                  <label style={{ fontSize: 11, color: '#b0b0b0' }}>Label:</label>
+                  <label style={{ fontSize: 11, color: '#b0b0b0' }}>Category (ID · Name):</label>
                   <select
-                    value={box.label || ''}
+                    value={String((typeof box.classId === 'number') ? box.classId : (nameToClassId[box.label] ?? ''))}
                     onChange={e => {
-                      const label = e.target.value;
-                      setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, label } : b));
+                      const clsId = Number(e.target.value);
+                      const label = classIdToName[clsId] || '';
+                      setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, classId: clsId, label } : b));
                       // 保存标签更改到历史记录
-                      setTimeout(() => saveToHistory('label', `更改框 ${selectedId} 标签为 ${label}`), 0);
+                      setTimeout(() => saveToHistory('label', `更改框 ${selectedId} 类别为 ${clsId}:${label}`), 0);
                     }}
                     style={{
                       width: '100%',
@@ -1194,15 +1326,10 @@ const ObjectDetectionTool = () => {
                       fontSize: 11
                     }}
                   >
-                    <option value="">Select label</option>
-                    <option value="car">Car</option>
-                    <option value="truck">Truck</option>
-                    <option value="bus">Bus</option>
-                    <option value="person">Person</option>
-                    <option value="bicycle">Bicycle</option>
-                    <option value="motorcycle">Motorcycle</option>
-                    <option value="traffic_light">Traffic Light</option>
-                    <option value="stop_sign">Stop Sign</option>
+                    <option value="">Select class</option>
+                    {Object.entries(classIdToName).map(([id, name]) => (
+                      <option key={id} value={id}>{id} · {name}</option>
+                    ))}
                   </select>
                 </div>
                 <div style={{ marginBottom: 8 }}>
@@ -1255,13 +1382,43 @@ const ObjectDetectionTool = () => {
           </div>
           
           {/* Export button */}
+          {/* Frame-level tags input */}
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 11, color: '#b0b0b0' }}>Image tags (comma-separated):</label>
+            <input
+              type="text"
+              value={frameTags[currentFrameIndex] || ''}
+              onChange={e => setFrameTags(prev => ({ ...prev, [currentFrameIndex]: e.target.value }))}
+              className="select-input"
+              placeholder="day,night"
+              style={{ width: '100%', background:'#1a1a1a', color:'#fff', marginTop: 4 }}
+            />
+            <div style={{ display:'flex', gap:8, marginTop:6 }}>
+              {['day','night','rain','snow'].map(t => (
+                <button key={t} className="test-button" onClick={()=>{
+                  const cur = String(frameTags[currentFrameIndex]||'').split(',').map(s=>s.trim()).filter(Boolean);
+                  const has = cur.includes(t);
+                  const next = has ? cur.filter(x=>x!==t) : cur.concat(t);
+                  setFrameTags(prev=>({ ...prev, [currentFrameIndex]: next.join(',') }));
+                }} style={{ padding:'4px 8px' }}>{t}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 11, color: '#b0b0b0' }}>Export format:</label>
+            <select value={exportFormat} onChange={e=>setExportFormat(e.target.value)} className="select-input" style={{ width: '100%', background:'#1a1a1a', color:'#fff' }}>
+              <option value="combined">Combined TXT (frame idx, xyxy, class, track)</option>
+              <option value="yolo_per_image">YOLO per-image (normalized + track id + tags)</option>
+            </select>
+          </div>
           <button
             onClick={handleAutofillYolov10}
             className="test-button"
             style={{ width: '100%', marginBottom: 8 }}
-            disabled={dataSource !== 's3' || frameUrls.length === 0 || isAutoDetecting}
-          >{isAutoDetecting ? 'Running YOLOv10…' : 'YOLOv10 Autofill (3 fps)'}
+            disabled={(dataSource !== 's3') || frameUrls.length === 0 || isAutoDetecting}
+          >{isAutoDetecting ? 'Running YOLOv10…' : 'YOLOv10 Autofill (S3)'}
           </button>
+          
           <button
             onClick={handleExportAnnotations}
             disabled={Object.keys(annotations).length === 0}
@@ -1293,7 +1450,7 @@ const ObjectDetectionTool = () => {
             }}
             disabled={Object.keys(frameBoxes).length === 0}
           >
-            Export as TXT
+            Export
           </button>
           <button
             onClick={() => setShowImport(true)}
@@ -1314,8 +1471,17 @@ const ObjectDetectionTool = () => {
           {showImport && ReactDOM.createPortal(
             <div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div style={{ background: '#222', padding: 24, borderRadius: 10, minWidth: 300, maxWidth: '95vw', width: 480, boxSizing: 'border-box', boxShadow: '0 4px 32px #0008' }}>
-                <div style={{ color: '#fff', marginBottom: 8, fontWeight: 600 }}>Choose a TXT file to import, or paste content below:</div>
-                <input type="file" accept=".txt" onChange={handleImportFile} style={{ display: 'block', width: '100%', marginBottom: 12, background: '#fff', color: '#000', borderRadius: 4, padding: 6, border: '1px solid #888' }} />
+                <div style={{ color: '#fff', marginBottom: 8, fontWeight: 600 }}>Import options:</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom: 12 }}>
+                  <div>
+                    <div style={{ color:'#ddd', fontSize:12, marginBottom:4 }}>Single combined TXT</div>
+                    <input type="file" accept=".txt" onChange={handleImportFile} style={{ display: 'block', width: '100%', background: '#fff', color: '#000', borderRadius: 4, padding: 6, border: '1px solid #888' }} />
+                  </div>
+                  <div>
+                    <div style={{ color:'#ddd', fontSize:12, marginBottom:4 }}>Folder of per-image YOLO txts</div>
+                    <input type="file" multiple onChange={handleImportTxtFolder} style={{ display: 'block', width: '100%', background: '#fff', color: '#000', borderRadius: 4, padding: 6, border: '1px solid #888' }} webkitdirectory="" directory="" />
+                  </div>
+                </div>
                 <textarea
                   value={importTxt}
                   onChange={e => setImportTxt(e.target.value)}
@@ -1324,7 +1490,7 @@ const ObjectDetectionTool = () => {
                   placeholder={'0\t374 649 389 664 0 1\n1\t374 649 389 664 0 1 ...'}
                 />
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={handleImportFrameBoxesTxt} style={{ flex: 1, background: '#00ff96', color: '#000', border: 'none', borderRadius: 6, padding: 10, fontWeight: 600, fontSize: 15, cursor: 'pointer' }}>Import</button>
+                  <button onClick={handleImportFrameBoxesTxt} style={{ flex: 1, background: '#00ff96', color: '#000', border: 'none', borderRadius: 6, padding: 10, fontWeight: 600, fontSize: 15, cursor: 'pointer' }}>Import Combined TXT</button>
                   <button onClick={() => { setShowImport(false); setImportTxt(''); }} style={{ flex: 1, background: '#444', color: '#fff', border: 'none', borderRadius: 6, padding: 10, fontSize: 15, cursor: 'pointer' }}>Cancel</button>
                 </div>
               </div>

@@ -187,5 +187,15 @@ export async function runDepthAnythingOnS3({ s3_url, file_type = 'video', fps = 
   }
   return data;
 }
+// Local images YOLO suggestions via backend (for local folder uploads)
+export async function detectLocalImages(files, { threshold = 0.3 } = {}) {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  form.append('score_threshold', String(threshold));
+  const res = await fetch('/api/v2e/detect-images', { method: 'POST', body: form });
+  if (!res.ok) throw new Error('Local image detection failed');
+  return await res.json();
+}
+
 
 
