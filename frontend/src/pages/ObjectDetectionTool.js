@@ -65,14 +65,46 @@ const ObjectDetectionTool = () => {
   const [frameBoxes, setFrameBoxes] = React.useState({}); // {frameIndex: [boxes]}
   const [boxes, setBoxes] = React.useState([]); // 当前帧的 boxes
   const [selectedId, setSelectedId] = React.useState(null);
-  const [mode, setMode] = React.useState('idle'); // idle | drawing | moving | resizing
+  const [mode, setMode] = React.useState('idle'); // idle | drawing | moving | resizing | panning
   const [drawStart, setDrawStart] = React.useState(null); // {x, y} in image coords
   const [moveStart, setMoveStart] = React.useState(null); // {x, y, box}
   const [resizeStart, setResizeStart] = React.useState(null); // {x, y, box, handle}
+  const [panStart, setPanStart] = React.useState(null); // {clientX, clientY, panX, panY}
 
   // --- ZOOM STATE MANAGEMENT ---
   const [zoom, setZoom] = React.useState(1); // 缩放比例
   const [zoomCenter, setZoomCenter] = React.useState({ x: 0, y: 0 }); // 缩放中心点
+  const [panX, setPanX] = React.useState(0);
+  const [panY, setPanY] = React.useState(0);
+
+  // --- CLASS COLORS ---
+  const CLASS_PALETTE = [
+    '#ff6b6b', '#4dabf7', '#ffd43b', '#69db7c', '#845ef7',
+    '#f06595', '#20c997', '#ffa94d', '#5c7cfa', '#e8590c', '#12b886'
+  ];
+  const SELECTED_COLOR = '#00ff96';
+  const classIdToColor = React.useMemo(() => {
+    const map = {};
+    Object.keys(classIdToName).forEach((idStr) => {
+      const id = Number(idStr);
+      map[id] = CLASS_PALETTE[id % CLASS_PALETTE.length];
+    });
+    return map;
+  }, []);
+  function colorForBox(box) {
+    const clsId = (typeof box.classId === 'number') ? box.classId : (nameToClassId[box.label] ?? -1);
+    if (clsId === -1) return '#888888';
+    return classIdToColor[clsId] || '#888888';
+  }
+  function rgbaFromHex(hex, alpha) {
+    try {
+      if (!hex || hex[0] !== '#' || (hex.length !== 7)) return `rgba(255,255,255,${alpha})`;
+      const r = parseInt(hex.slice(1,3), 16);
+      const g = parseInt(hex.slice(3,5), 16);
+      const b = parseInt(hex.slice(5,7), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    } catch { return `rgba(255,255,255,${alpha})`; }
+  }
 
   // --- UNDO/REDO SYSTEM ---
   const [history, setHistory] = React.useState([]); // 操作历史
@@ -190,6 +222,10 @@ const ObjectDetectionTool = () => {
         }
       }
       setSelectedId(null);
+      // 切换到新图片后，重置缩放与位置，确保居中
+      setZoom(1);
+      setPanX(0);
+      setPanY(0);
     });
     return () => cancelAnimationFrame(handle);
     // eslint-disable-next-line
@@ -267,8 +303,13 @@ const ObjectDetectionTool = () => {
     
     // 由于图片使用 transform: scale() 且 transformOrigin: 'center center'
     // 缩放后的偏移量需要重新计算
-    const scaledOffsetX = offsetX - (scaledDisplayWidth - displayWidth) / 2;
-    const scaledOffsetY = offsetY - (scaledDisplayHeight - displayHeight) / 2;
+    let scaledOffsetX = offsetX - (scaledDisplayWidth - displayWidth) / 2;
+    let scaledOffsetY = offsetY - (scaledDisplayHeight - displayHeight) / 2;
+    // Apply manual pan only when zoomed in (>1)
+    if (zoom > 1) {
+      scaledOffsetX += panX;
+      scaledOffsetY += panY;
+    }
   
     return {
       left: canvasRect.left + scaledOffsetX, // ← 这是图像实际显示区域的左上角（相对屏幕）
@@ -305,6 +346,21 @@ const ObjectDetectionTool = () => {
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
     const newZoom = Math.max(0.1, Math.min(zoom * delta, 5)); // 限制缩放范围 0.1x - 5x
 
+    // 若接近或小于 1，则重置并居中
+    if (newZoom <= 1 || Math.abs(newZoom - 1) < 0.02) {
+      setZoom(1);
+      setPanX(0);
+      setPanY(0);
+      return;
+    }
+
+    // 缩小过程中让平移逐步靠拢中心（按缩放比缩小 pan）
+    if (newZoom < zoom) {
+      const ratio = newZoom / zoom;
+      setPanX(prev => prev * ratio);
+      setPanY(prev => prev * ratio);
+    }
+
     // 更新缩放状态
     setZoom(newZoom);
   }
@@ -312,6 +368,8 @@ const ObjectDetectionTool = () => {
   // 重置缩放
   function resetZoom() {
     setZoom(1);
+    setPanX(0);
+    setPanY(0);
   }
   
 
@@ -321,6 +379,12 @@ const ObjectDetectionTool = () => {
     if (!info) return;
     const x = ((e.clientX - info.left) / info.scaleX);
     const y = ((e.clientY - info.top) / info.scaleY);
+    // Right button => start panning
+    if (e.button === 2) {
+      setMode('panning');
+      setPanStart({ x: e.clientX, y: e.clientY, panX, panY });
+      return;
+    }
     // Check if on handle
     if (selectedId) {
       const sel = boxes.find(b => b.id === selectedId);
@@ -349,6 +413,13 @@ const ObjectDetectionTool = () => {
     if (!info) return;
     const x = ((e.clientX - info.left) / info.scaleX);
     const y = ((e.clientY - info.top) / info.scaleY);
+    if (mode === 'panning' && panStart) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setPanX(panStart.panX + dx);
+      setPanY(panStart.panY + dy);
+      return;
+    }
     if (mode === 'drawing' && drawStart) {
       // Preview box
       const newBox = {
@@ -381,6 +452,11 @@ const ObjectDetectionTool = () => {
     if (!info) return;
     const x = ((e.clientX - info.left) / info.scaleX);
     const y = ((e.clientY - info.top) / info.scaleY);
+    if (mode === 'panning') {
+      setMode('idle');
+      setPanStart(null);
+      return;
+    }
     if (mode === 'drawing' && drawStart) {
       const w = Math.abs(drawStart.x - x);
       const h = Math.abs(drawStart.y - y);
@@ -640,26 +716,73 @@ const ObjectDetectionTool = () => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     // Separate images and txts
-    const images = files.filter(f => /\.(jpg|jpeg|png)$/i.test(f.name));
+    const images = files.filter(f => /(\.(jpg|jpeg|png))$/i.test(f.name));
+    const txts = files.filter(f => /\.txt$/i.test(f.name));
     setLocalFolderFiles(files);
-    // Prepare image list with dims
+
+    // Read txt files into a stem->content map (if any)
+    const byStem = {};
+    if (txts.length > 0) {
+      await Promise.all(txts.map(f => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => { byStem[stem(f.name)] = String(reader.result || ''); resolve(); };
+        reader.readAsText(f);
+      })));
+    }
+
+    // Prepare image list with dimensions
     const imageItems = await Promise.all(images.map(f => new Promise((resolve) => {
       const url = URL.createObjectURL(f);
       const img = new Image();
       img.onload = () => resolve({ name: f.name, file: f, url, width: img.naturalWidth, height: img.naturalHeight });
       img.src = url;
     })));
-    // Build frameUrls and initial boxes from YOLO per-image txts if present
+
+    // Set frames
     const urls = imageItems.map(it => it.url);
     setLocalImageList(imageItems);
     setFrameUrls(urls);
     setCurrentFrameIndex(0);
-    // Do not auto-import txts here; handled via Import modal
-    setFrameBoxes({});
-    setBoxes([]);
+
+    // If per-image txts exist, auto-parse and populate boxes/tags
+    const newFrameBoxes = {};
+    const newFrameTags = {};
+    if (Object.keys(byStem).length > 0) {
+      imageItems.forEach((it, idx) => {
+        const content = byStem[stem(it.name)];
+        if (!content) return;
+        const lines = content.split(/\r?\n/).filter(Boolean);
+        const list = [];
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 5) continue;
+          const cls = Number(parts[0]);
+          const cx = parseFloat(parts[1]);
+          const cy = parseFloat(parts[2]);
+          const w = parseFloat(parts[3]);
+          const h = parseFloat(parts[4]);
+          const x = (cx - w / 2) * it.width;
+          const y = (cy - h / 2) * it.height;
+          const pw = w * it.width;
+          const ph = h * it.height;
+          let trackingId = '';
+          if (parts.length >= 6) trackingId = parts[5];
+          if (parts.length > 6) newFrameTags[idx] = parts.slice(6).join(' ');
+          list.push({ id: Date.now() + Math.random(), x, y, w: pw, h: ph, label: classIdToName[cls] || '', classId: cls, trackingId });
+        }
+        if (list.length > 0) newFrameBoxes[idx] = list;
+      });
+      setFrameBoxes(newFrameBoxes);
+      setBoxes(newFrameBoxes[0] || []);
+      setFrameTags(newFrameTags);
+    } else {
+      // Only images were provided; start clean and allow later import
+      setFrameBoxes({});
+      setBoxes([]);
+      setFrameTags({});
+    }
+
     setViewMode('annotate');
-    // 清空并初始化帧标签
-    setFrameTags({});
   };
 
   function stem(filename) {
@@ -1158,7 +1281,8 @@ const ObjectDetectionTool = () => {
                     onDoubleClick={handleImgDoubleClick}
                     onDragStart={e => e.preventDefault()}
                     onClick={handleCanvasClick}
-                    onWheel={handleWheel} // 添加滚轮缩放事件
+                  onWheel={handleWheel} // 添加滚轮缩放事件
+                  onContextMenu={(e)=> e.preventDefault()} // 右键拖拽时禁用菜单
                   >
                     {/* 图片层 */}
                     {frameUrls[currentFrameIndex] && (
@@ -1175,7 +1299,7 @@ const ObjectDetectionTool = () => {
                           position: 'absolute',
                           left: 0,
                           top: 0,
-                          transform: `scale(${zoom})`,
+                          transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
                           transformOrigin: 'center center',
                         }}
                         onLoad={() => {
@@ -1190,22 +1314,27 @@ const ObjectDetectionTool = () => {
                     {(() => {
                       const info = getImgInfo();
                       if (!info) return null;
-                      return boxes.map(box => (
-                        <div
-                          key={box.id}
-                          style={{
-                            position: 'absolute',
-                            left: box.x * info.scaleX + info.offsetX,
-                            top: box.y * info.scaleY + info.offsetY,
-                            width: Math.max(1, box.w * info.scaleX),
-                            height: Math.max(1, box.h * info.scaleY),
-                            border: box.id === selectedId ? '2px solid #00ff96' : '2px solid #ff6b6b',
-                            background: box.id === selectedId ? 'rgba(0,255,150,0.15)' : 'rgba(255,107,107,0.10)',
-                            zIndex: 10,
-                            pointerEvents: 'none',
-                          }}
-                        />
-                      ));
+                      return boxes.map(box => {
+                        const baseColor = colorForBox(box);
+                        const stroke = box.id === selectedId ? `2px solid ${SELECTED_COLOR}` : `2px solid ${baseColor}`;
+                        const fill = box.id === selectedId ? rgbaFromHex(SELECTED_COLOR, 0.15) : rgbaFromHex(baseColor, 0.10);
+                        return (
+                          <div
+                            key={box.id}
+                            style={{
+                              position: 'absolute',
+                              left: box.x * info.scaleX + info.offsetX,
+                              top: box.y * info.scaleY + info.offsetY,
+                              width: Math.max(1, box.w * info.scaleX),
+                              height: Math.max(1, box.h * info.scaleY),
+                              border: stroke,
+                              background: fill,
+                              zIndex: 10,
+                              pointerEvents: 'none',
+                            }}
+                          />
+                        );
+                      });
                     })()}
                     {/* Current drawing box */}
                     {drawStart && (() => {
