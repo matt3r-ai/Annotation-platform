@@ -70,6 +70,8 @@ const ObjectDetectionTool = () => {
   const [moveStart, setMoveStart] = React.useState(null); // {x, y, box}
   const [resizeStart, setResizeStart] = React.useState(null); // {x, y, box, handle}
   const [panStart, setPanStart] = React.useState(null); // {clientX, clientY, panX, panY}
+  const classSelectRef = React.useRef(null);
+  const [forceClassListOpen, setForceClassListOpen] = React.useState(false);
 
   // --- ZOOM STATE MANAGEMENT ---
   const [zoom, setZoom] = React.useState(1); // 缩放比例
@@ -461,12 +463,17 @@ const ObjectDetectionTool = () => {
       const w = Math.abs(drawStart.x - x);
       const h = Math.abs(drawStart.y - y);
       if (w > 5 && h > 5) {
+        const defaultClassId = 0;
         const newBox = {
           id: Date.now().toString(),
           x: Math.min(drawStart.x, x),
           y: Math.min(drawStart.y, y),
           w,
           h,
+          classId: defaultClassId,
+          label: classIdToName[defaultClassId] || '',
+          trackingId: '',
+          classListOpen: true
         };
         setBoxes(bs => {
           const newBoxes = bs.filter(b => b.id !== 'preview').concat(newBox);
@@ -475,12 +482,14 @@ const ObjectDetectionTool = () => {
           return newBoxes;
         });
         setSelectedId(newBox.id);
+        // 不再使用全局计时，默认保持展开直到人为锁定
       } else {
         setBoxes(bs => bs.filter(b => b.id !== 'preview'));
       }
     } else if (mode === 'moving' || mode === 'resizing') {
       // 移动或调整大小操作完成后保存到历史记录
       setTimeout(() => saveToHistory('modify', `${mode === 'moving' ? '移动' : '调整大小'} 框 ${selectedId}`), 0);
+      // 结束编辑时，保持列表展开状态不变，由下次拉框时再决定
     }
     setMode('idle');
     setDrawStart(null);
@@ -495,7 +504,11 @@ const ObjectDetectionTool = () => {
     const y = ((e.clientY - info.top) / info.scaleY);
     // Select box if clicked inside
     const found = boxes.find(b => pointInBox(b, x, y));
-    if (found) setSelectedId(found.id);
+    if (found) {
+      setSelectedId(found.id);
+      // 选择已有框时，恢复为普通下拉
+      setForceClassListOpen(false);
+    }
   }
 
   // --- Box/Handle helpers ---
@@ -583,6 +596,19 @@ const ObjectDetectionTool = () => {
   // )}
 
   React.useEffect(() => {
+    // When switching data sources, hard reset frames and annotations to avoid carry-over
+    setSelectedId(null);
+    setBoxes([]);
+    setFrameBoxes({});
+    setFrameUrls([]);
+    setLocalImageList([]);
+    setCurrentFrameIndex(0);
+    setFrameTags({});
+    // Reset zoom and pan
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+    // Update view mode according to source
     if (dataSource === 's3') {
       setViewMode('fetch');
     } else {
@@ -788,6 +814,19 @@ const ObjectDetectionTool = () => {
   function stem(filename) {
     const i = filename.lastIndexOf('.');
     return i >= 0 ? filename.slice(0, i) : filename;
+  }
+
+  // Helper: current image name
+  function getCurrentImageName() {
+    if (!frameUrls[currentFrameIndex]) return '';
+    if (dataSource === 'local' && localImageList[currentFrameIndex]?.name) {
+      return localImageList[currentFrameIndex].name;
+    }
+    try {
+      const u = frameUrls[currentFrameIndex];
+      const q = u.split('?')[0];
+      return (q.split('/').pop() || 'frame');
+    } catch { return 'frame'; }
   }
 
 
@@ -1262,13 +1301,17 @@ const ObjectDetectionTool = () => {
           <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
             <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {frameUrls.length > 0 ? (
-                <div style={{ position: 'relative', width: '100%', height: 'calc(100vh - 200px)', minHeight: '400px' }}>
+                <>
+                {/* Image name outside the image container */}
+                <div style={{ textAlign:'center', color:'#cfe7ff', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{getCurrentImageName()}</div>
+                {/* Only the image inside the main container */}
+                <div style={{ position: 'relative', width: '100%', minHeight: '400px' }}>
                   <div
                     ref={canvasRef}
                     style={{
                       position: 'relative',
                       width: '100%',
-                      height: '100%',
+                      height: 'calc(100vh - 340px)',
                       borderRadius: 12,
                       userSelect: 'none',
                       overflow: 'hidden',
@@ -1358,45 +1401,38 @@ const ObjectDetectionTool = () => {
                       );
                     })()}
                     
-                    {/* Floating pagination controls */}
-                    <div 
-                      style={{ 
-                        position: 'absolute', 
-                        bottom: '10px', 
-                        left: '50%', 
-                        transform: 'translateX(-50%)',
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        gap: 15, 
-                        padding: '8px 16px', 
-                        background: 'rgba(0,0,0,0.9)', 
-                        borderRadius: 20,
-                        backdropFilter: 'blur(10px)',
-                        border: '1px solid rgba(0,255,150,0.4)',
-                        zIndex: 1000
-                      }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onMouseMove={(e) => e.stopPropagation()}
-                      onMouseUp={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        className="test-button"
-                        onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
-                        disabled={currentFrameIndex === 0}
-                        style={{ padding: '6px 10px', fontSize: '14px' }}
-                      >⏮️</button>
-                      <span style={{ fontWeight: 600, color: '#fff', fontSize: 14, minWidth: '80px', textAlign: 'center' }}>
-                        {currentFrameIndex + 1} / {frameUrls.length}
-                      </span>
-                      <button
-                        className="test-button"
-                        onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
-                        disabled={currentFrameIndex === frameUrls.length - 1}
-                        style={{ padding: '6px 10px', fontSize: '14px' }}
-                      >⏭️</button>
-                    </div>
+                    
                   </div>
                 </div>
+                {/* Pagination + progress (below entire middle area, always visible) */}
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, marginTop: 12 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                    <button
+                      className="test-button"
+                      onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
+                      disabled={currentFrameIndex === 0}
+                      style={{ padding: '6px 10px', fontSize: '14px' }}
+                    >⏮️</button>
+                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 14, minWidth: '80px', textAlign: 'center' }}>
+                      {currentFrameIndex + 1} / {frameUrls.length}
+                    </span>
+                    <button
+                      className="test-button"
+                      onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
+                      disabled={currentFrameIndex === frameUrls.length - 1}
+                      style={{ padding: '6px 10px', fontSize: '14px' }}
+                    >⏭️</button>
+                  </div>
+                  {(() => {
+                    const percent = frameUrls.length > 0 ? Math.round(((currentFrameIndex + 1) / frameUrls.length) * 100) : 0;
+                    return (
+                      <div style={{ width: '100%', maxWidth: 900, height: 8, background:'rgba(255,255,255,0.18)', borderRadius: 5, overflow:'hidden' }}>
+                        <div style={{ width: `${percent}%`, height: '100%', background:'#00ff96', transition:'width 120ms ease' }} />
+                      </div>
+                    );
+                  })()}
+                </div>
+                </>
               ) : (dataSource === 'local' && localVideoUrl) ? (
                 <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
               ) : (
@@ -1435,8 +1471,21 @@ const ObjectDetectionTool = () => {
                 <div style={{ fontSize: 10, marginBottom: 8 }}>H: {Math.round(box.h)}</div>
                 <div style={{ marginBottom: 8 }}>
                   <label style={{ fontSize: 11, color: '#b0b0b0' }}>Category (ID · Name):</label>
+                  {(() => {
+                    const box = boxes.find(b => b.id === selectedId);
+                    if (!box || !box.classListOpen) return null;
+                    return (
+                      <div style={{ color:'#ff4d4f', fontSize: 11, marginTop: 6, marginBottom: 4 }}>Select a class — double‑click to lock</div>
+                    );
+                  })()}
                   <select
+                    ref={classSelectRef}
+                    size={(box.classListOpen ? 8 : undefined)}
                     value={String((typeof box.classId === 'number') ? box.classId : (nameToClassId[box.label] ?? ''))}
+                    onDoubleClick={() => {
+                      if (!selectedId) return;
+                      setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, classListOpen: false } : b));
+                    }}
                     onChange={e => {
                       const clsId = Number(e.target.value);
                       const label = classIdToName[clsId] || '';
