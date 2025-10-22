@@ -1742,12 +1742,13 @@ def _generate_description_with_gemini(prompt: str) -> str:
     try:
         import os
         import google.generativeai as genai
-        api_key = os.getenv("GOOGLE_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             # Fallback dummy text when key is not set
             return "Automatic summary: " + prompt[:120]
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model_name = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+        model = genai.GenerativeModel(model_name)
         res = model.generate_content(prompt)
         return (res.text or "").strip() if res else ""
     except Exception as e:
@@ -2095,10 +2096,11 @@ async def auto_describe(req: AutoDescribeRequest) -> AutoDescribeResponse:
             from io import BytesIO
             from PIL import Image
 
-            api_key = os.getenv("GOOGLE_API_KEY")
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             if api_key:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                model_name = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+                model = genai.GenerativeModel(model_name)
 
                 # Resolve and download video locally
                 video_key = _resolve_video_key_for_scenario(req.scenario_id)

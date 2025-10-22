@@ -270,8 +270,10 @@
   margin-top: 10px;
   border: 1px solid rgba(0, 255, 150, 0.4);
   backdrop-filter: blur(10px);
-  width: 200px;
+  width: 260px; /* widen sidebar */
   flex-shrink: 0;
+  max-height: calc(100vh - 120px); /* ensure room for header/margins */
+  overflow-y: auto; /* enable vertical scrolling */
 }
 
 .selected-points-container > div:first-child {
