@@ -16,6 +16,7 @@ const ObjectDetectionTool = () => {
   const [localImageList, setLocalImageList] = useState([]); // [{name, file, url, width, height}]
   const folderInputRef = React.useRef(null);
   const [frameTags, setFrameTags] = useState({}); // {frameIndex: 'day,night'}
+  const [carryForwardLocal, setCarryForwardLocal] = useState(false); // local-only carry-forward toggle
   const [orgIds, setOrgIds] = useState([]);
   const [keyIds, setKeyIds] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState('');
@@ -32,22 +33,74 @@ const ObjectDetectionTool = () => {
   // 标注相关状态
   const [boundingBoxes, setBoundingBoxes] = useState({}); // {frameIndex: [boxes]}
   // const [selectedBox, setSelectedBox] = useState(null); // <-- DELETE THIS LINE
-  // Class map (id -> name) provided by teammate
-  const classIdToName = {
-    0: 'person',
-    1: 'light-vehicle',
-    2: 'heavy-vehicle',
-    3: 'bike',
-    4: 'traffic-light',
-    5: 'traffic-sign',
-    6: 'construction',
-    7: 'train',
-    8: 'animal',
-    9: 'emergency-vehicle',
-    10: 'shopping-cart',
-  };
-  const nameToClassId = Object.fromEntries(Object.entries(classIdToName).map(([id, name]) => [name, Number(id)]));
-  const [labels, setLabels] = useState(Object.values(classIdToName));
+  // Category maps (id -> name), with presets and user-defined maps (persisted to localStorage)
+  const DEFAULT_CATEGORY_MAPS = React.useMemo(() => ({
+    'YOLO Test Set': {
+      0: 'person',
+      1: 'light-vehicle',
+      2: 'heavy-vehicle',
+      3: 'bike',
+      4: 'traffic-light',
+      5: 'traffic-sign',
+      6: 'construction',
+      7: 'train',
+      8: 'animal',
+      9: 'emergency-vehicle',
+      10: 'shopping-cart',
+    },
+    'YOLO Train Set': {
+      0: 'person',
+      1: 'vehicle',
+      2: 'bike',
+      3: 'traffic-reg',
+      4: 'construction',
+      5: 'train',
+      6: 'animal',
+      7: 'emergency-vehicle',
+      8: 'shopping-cart',
+    }
+  }), []);
+
+  const [categoryMaps, setCategoryMaps] = useState(() => {
+    try {
+      const stored = localStorage.getItem('od_category_maps');
+      if (stored) {
+        const parsed = JSON.parse(stored) || {};
+        // Always restore built-in maps to defaults
+        return {
+          ...parsed,
+          'YOLO Test Set': DEFAULT_CATEGORY_MAPS['YOLO Test Set'],
+          'YOLO Train Set': DEFAULT_CATEGORY_MAPS['YOLO Train Set'],
+        };
+      }
+    } catch {}
+    return DEFAULT_CATEGORY_MAPS;
+  });
+  const [currentMapKey, setCurrentMapKey] = useState(() => Object.keys(categoryMaps)[0] || 'YOLO Test Set');
+  const classIdToName = React.useMemo(() => (categoryMaps[currentMapKey] || {}), [categoryMaps, currentMapKey]);
+  const nameToClassId = React.useMemo(() => Object.fromEntries(Object.entries(classIdToName).map(([id, name]) => [name, Number(id)])), [classIdToName]);
+  const [labels, setLabels] = useState(() => Object.values(categoryMaps[currentMapKey] || {}));
+  React.useEffect(() => { setLabels(Object.values(classIdToName)); }, [classIdToName]);
+
+  function persistCategoryMaps(next) {
+    try { localStorage.setItem('od_category_maps', JSON.stringify(next)); } catch {}
+  }
+  // Ensure built-in maps are not accidentally persisted with changes
+  React.useEffect(() => {
+    const yo = JSON.stringify(categoryMaps['YOLO Test Set'] || {});
+    const yoDef = JSON.stringify(DEFAULT_CATEGORY_MAPS['YOLO Test Set']);
+    const tr = JSON.stringify(categoryMaps['YOLO Train Set'] || {});
+    const trDef = JSON.stringify(DEFAULT_CATEGORY_MAPS['YOLO Train Set']);
+    if (yo !== yoDef || tr !== trDef) {
+      const next = {
+        ...categoryMaps,
+        'YOLO Test Set': DEFAULT_CATEGORY_MAPS['YOLO Test Set'],
+        'YOLO Train Set': DEFAULT_CATEGORY_MAPS['YOLO Train Set'],
+      };
+      setCategoryMaps(next);
+      persistCategoryMaps(next);
+    }
+  }, []);
   const [trackingIds, setTrackingIds] = useState({}); // {boxId: trackingId}
   const [annotations, setAnnotations] = useState({}); // {frameIndex: [{x1,x2,y1,y2,label,trackingId}]}
 
@@ -209,17 +262,22 @@ const ObjectDetectionTool = () => {
       if (frameBoxes[currentFrameIndex]) {
         setBoxes(frameBoxes[currentFrameIndex]);
       } else {
-        let found = false;
-        for (let i = currentFrameIndex - 1; i >= 0; i--) {
-          if (frameBoxes[i] && frameBoxes[i].length > 0) {
-            const prevBoxes = frameBoxes[i].map(b => ({ ...b, id: Date.now() + Math.random() }));
-            setBoxes(prevBoxes);
-            setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: prevBoxes }));
-            found = true;
-            break;
+        const allowCarry = (dataSource === 's3') || (dataSource === 'local' && carryForwardLocal);
+        if (allowCarry) {
+          let found = false;
+          for (let i = currentFrameIndex - 1; i >= 0; i--) {
+            if (frameBoxes[i] && frameBoxes[i].length > 0) {
+              const prevBoxes = frameBoxes[i].map(b => ({ ...b, id: Date.now() + Math.random() }));
+              setBoxes(prevBoxes);
+              setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: prevBoxes }));
+              found = true;
+              break;
+            }
           }
-        }
-        if (!found) {
+          if (!found) {
+            setBoxes([]);
+          }
+        } else {
           setBoxes([]);
         }
       }
@@ -231,7 +289,7 @@ const ObjectDetectionTool = () => {
     });
     return () => cancelAnimationFrame(handle);
     // eslint-disable-next-line
-  }, [currentFrameIndex]);
+  }, [currentFrameIndex, dataSource, carryForwardLocal]);
 
   // boxes 变化时，自动保存到 frameBoxes
   React.useEffect(() => {
@@ -1185,6 +1243,14 @@ const ObjectDetectionTool = () => {
         <div className="data-source-selection">
           <div className="selection-container">
             <h2>Select Data Source</h2>
+            {dataSource === 'local' && (
+              <div style={{ marginTop: 6, marginBottom: 10, padding: '8px 10px', border: '1px solid #27d3a2', borderRadius: 8, background: 'rgba(39,211,162,0.08)', display:'flex', alignItems:'center', gap:10, maxWidth: 280 }}>
+                <input id="carryForwardLocal" type="checkbox" checked={carryForwardLocal} onChange={e=>setCarryForwardLocal(e.target.checked)} />
+                <label htmlFor="carryForwardLocal" style={{ color:'#e9fbf4', fontSize: 12, lineHeight: 1.3 }}>
+                  Carry forward boxes to next frame (local continuous frames)
+                </label>
+              </div>
+            )}
             <div className="selection-options">
               <div
                 className={`option-card${dataSource === 'local' ? ' active' : ''}`}
@@ -1216,10 +1282,6 @@ const ObjectDetectionTool = () => {
                   webkitdirectory=""
                   directory=""
                 />
-                <div style={{ marginTop: 18 }}>
-                  <label className="select-label" style={{ color: '#b0b0b0', fontSize: 13, marginBottom: 6, display: 'block', textAlign: 'left' }}>Or, select a video file</label>
-                  <input type="file" accept="video/*" onChange={handleLocalFileChange} className="select-input" style={{ marginTop: 4 }} />
-                </div>
               </>
             )}
             {/* MCDB filter moved to center panel; nothing here in sidebar now for S3 */}
@@ -1298,7 +1360,7 @@ const ObjectDetectionTool = () => {
         </div>
           ) : (
           /* 预览容器：优先显示已加载的帧（本地或S3），否则显示本地视频或提示 */
-          <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(15,52,96,0.3)' }}>
+          <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(99, 130, 169, 0.3)' , display:'flex'}}>
             <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {frameUrls.length > 0 ? (
                 <>
@@ -1311,7 +1373,7 @@ const ObjectDetectionTool = () => {
                     style={{
                       position: 'relative',
                       width: '100%',
-                      height: 'calc(100vh - 340px)',
+                      height: 'calc(100vh - 310px)',
                       borderRadius: 12,
                       userSelect: 'none',
                       overflow: 'hidden',
@@ -1359,23 +1421,39 @@ const ObjectDetectionTool = () => {
                       if (!info) return null;
                       return boxes.map(box => {
                         const baseColor = colorForBox(box);
-                        const stroke = box.id === selectedId ? `2px solid ${SELECTED_COLOR}` : `2px solid ${baseColor}`;
-                        const fill = box.id === selectedId ? rgbaFromHex(SELECTED_COLOR, 0.15) : rgbaFromHex(baseColor, 0.10);
+                        const isSelected = box.id === selectedId;
+                        const strokeColor = isSelected ? SELECTED_COLOR : baseColor;
+                        const stroke = `2px solid ${strokeColor}`;
+                        const fill = isSelected ? rgbaFromHex(SELECTED_COLOR, 0.15) : rgbaFromHex(baseColor, 0.10);
+                        const klassName = (classIdToName[box.classId] || box.label || '').trim();
+                        const trackId = (box.trackingId !== undefined && box.trackingId !== null) ? String(box.trackingId) : '';
+                        const labelText = `${trackId}${trackId && klassName ? '  ' : ''}${klassName}`;
+                        const left = box.x * info.scaleX + info.offsetX;
+                        const top = box.y * info.scaleY + info.offsetY;
+                        const width = Math.max(1, box.w * info.scaleX);
+                        const height = Math.max(1, box.h * info.scaleY);
                         return (
-                          <div
-                            key={box.id}
-                            style={{
-                              position: 'absolute',
-                              left: box.x * info.scaleX + info.offsetX,
-                              top: box.y * info.scaleY + info.offsetY,
-                              width: Math.max(1, box.w * info.scaleX),
-                              height: Math.max(1, box.h * info.scaleY),
-                              border: stroke,
-                              background: fill,
-                              zIndex: 10,
-                              pointerEvents: 'none',
-                            }}
-                          />
+                          <div key={box.id} style={{ position: 'absolute', left, top, width, height, zIndex: 10, pointerEvents: 'none' }}>
+                            <div style={{ position: 'absolute', inset: 0, border: stroke, background: fill }} />
+                            <div
+                              style={{
+                                position: 'absolute',
+                                left: 0,
+                                top: -18,
+                                background: strokeColor,
+                                color: '#000',
+                                padding: '2px 6px',
+                                borderRadius: 4,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                lineHeight: '12px',
+                                maxWidth: '100%',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >{labelText}</div>
+                          </div>
                         );
                       });
                     })()}
@@ -1405,28 +1483,28 @@ const ObjectDetectionTool = () => {
                   </div>
                 </div>
                 {/* Pagination + progress (below entire middle area, always visible) */}
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, marginTop: 12 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6, marginTop: 4 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                     <button
                       className="test-button"
                       onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
                       disabled={currentFrameIndex === 0}
-                      style={{ padding: '6px 10px', fontSize: '14px' }}
+                      style={{ padding: '4px 8px', fontSize: '12px', minWidth: 28 }}
                     >⏮️</button>
-                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 14, minWidth: '80px', textAlign: 'center' }}>
+                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 12, minWidth: '64px', textAlign: 'center' }}>
                       {currentFrameIndex + 1} / {frameUrls.length}
                     </span>
                     <button
                       className="test-button"
                       onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
                       disabled={currentFrameIndex === frameUrls.length - 1}
-                      style={{ padding: '6px 10px', fontSize: '14px' }}
+                      style={{ padding: '4px 8px', fontSize: '12px', minWidth: 28 }}
                     >⏭️</button>
                   </div>
                   {(() => {
                     const percent = frameUrls.length > 0 ? Math.round(((currentFrameIndex + 1) / frameUrls.length) * 100) : 0;
                     return (
-                      <div style={{ width: '100%', maxWidth: 900, height: 8, background:'rgba(255,255,255,0.18)', borderRadius: 5, overflow:'hidden' }}>
+                      <div style={{ width: '100%', maxWidth: 900, height: 6, background:'rgba(255,255,255,0.18)', borderRadius: 5, overflow:'hidden' }}>
                         <div style={{ width: `${percent}%`, height: '100%', background:'#00ff96', transition:'width 120ms ease' }} />
                       </div>
                     );
@@ -1450,9 +1528,97 @@ const ObjectDetectionTool = () => {
         {/* Right Panel: Annotation Panel */}
         <div className="selected-points-container">
           {/* ...右侧 annotation panel 内容，全部用 AnnotationTool.js 的 className ... */}
-          {/* Annotation instructions */}
-          <div style={{ marginBottom: 15, fontSize: 11, color: '#888' }}>
-            Drag to draw boxes. Click and drag inside existing boxes to resize them. Double-click to select boxes.
+          {/* Annotation instructions removed as requested */}
+
+          {/* Category map presets and editor (placed ABOVE Selected Box Info) */}
+          <div style={{ marginBottom: 10, padding: '8px 10px', border:'1px solid #2a9d8f', borderRadius:8, maxWidth:'100%' }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:8 }}>
+              <label style={{ color:'#cfe7ff', fontSize:12 }}>Category map:</label>
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                <select className="select-input" value={currentMapKey} onChange={e=> setCurrentMapKey(e.target.value)} style={{ background:'#0d2540', color:'#eaf6ff', width:'100%', height:28, fontSize:12, padding:'2px 6px' }}>
+                  {Object.keys(categoryMaps).map(k => (<option key={k} value={k}>{k}</option>))}
+                </select>
+                <button
+                  title="Delete map"
+                  disabled={["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)}
+                  onClick={()=>{
+                          if (["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) return;
+                    const key = currentMapKey;
+                    if (!key) return;
+                    if (!confirm(`Delete category map "${key}"? This cannot be undone.`)) return;
+                    const next = { ...categoryMaps };
+                    delete next[key];
+                    const keys = Object.keys(next);
+                    if (keys.length === 0) {
+                      alert('At least one category map is required.');
+                      return;
+                    }
+                    setCategoryMaps(next); persistCategoryMaps(next);
+                    setCurrentMapKey(keys[0]);
+                  }}
+                  style={{
+                    width:28,
+                    height:28,
+                    lineHeight:'24px',
+                    textAlign:'center',
+                    fontWeight:700,
+                    fontSize:16,
+                    borderRadius:6,
+                    border:'1px solid #ff8080',
+                          background: (!["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) ? '#ff4d4f' : '#2a2a2a',
+                          color: (!["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) ? '#fff' : '#777',
+                          cursor: (!["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) ? 'pointer' : 'not-allowed'
+                  }}
+                >-</button>
+              </div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                <button className="test-button" style={{ flex:'1 1 110px', minWidth:110, padding:'4px 8px', fontSize:12 }} onClick={()=>{
+                  const base = prompt('New map name?');
+                  if (!base) return;
+                  const copied = JSON.parse(JSON.stringify(classIdToName));
+                  const next = { ...categoryMaps, [base]: copied };
+                  setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
+                }}>Duplicate</button>
+                <button className="test-button" style={{ flex:'1 1 90px', minWidth:90, padding:'4px 8px', fontSize:12 }} onClick={()=>{
+                  const base = prompt('New empty map name?');
+                  if (!base) return;
+                  const next = { ...categoryMaps, [base]: {} };
+                  setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
+                }}>New</button>
+              </div>
+            </div>
+            {(!["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) && (
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                <button
+                  className="test-button"
+                  style={{ width:'100%', padding:'6px 8px', fontSize:12 }}
+                  onClick={()=>{
+                    const name = prompt('New class name:');
+                    if (name==null) return;
+                    const trimmed = (name||'').trim();
+                    if (!trimmed) return;
+                    const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
+                    const ids = Object.keys(nextMap).map(n => Number(n)).filter(Number.isFinite);
+                    const nextId = ids.length ? Math.max(...ids) + 1 : 0;
+                    nextMap[nextId] = trimmed;
+                    const next = { ...categoryMaps, [currentMapKey]: nextMap };
+                    setCategoryMaps(next); persistCategoryMaps(next);
+                  }}
+                >+ Add Class</button>
+                <button
+                  className="test-button"
+                  style={{ width:'100%', padding:'6px 8px', fontSize:12 }}
+                  onClick={()=>{
+                    const idStr = prompt('Remove class id (number):');
+                    if (idStr==null) return; const id = Number(idStr); if (!Number.isFinite(id)) return;
+                    const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
+                    delete nextMap[id];
+                    const next = { ...categoryMaps, [currentMapKey]: nextMap };
+                    setCategoryMaps(next); persistCategoryMaps(next);
+                  }}
+                >- Remove Class</button>
+              </div>
+            )}
           </div>
           
           {/* Current selected box information */}
@@ -1465,17 +1631,20 @@ const ObjectDetectionTool = () => {
             return (
               <div style={{ marginBottom: 15, padding: 10, background: 'rgba(0,255,150,0.1)', borderRadius: 8, border: '1px solid rgba(0,255,150,0.3)' }}>
                 <div style={{ fontSize: 12, color: '#00ff96', marginBottom: 8 }}>Selected Box Info:</div>
-                <div style={{ fontSize: 10, marginBottom: 4 }}>X: {Math.round(box.x)}</div>
-                <div style={{ fontSize: 10, marginBottom: 4 }}>Y: {Math.round(box.y)}</div>
-                <div style={{ fontSize: 10, marginBottom: 4 }}>W: {Math.round(box.w)}</div>
-                <div style={{ fontSize: 10, marginBottom: 8 }}>H: {Math.round(box.h)}</div>
+                <div style={{ display:'flex', gap:12, flexWrap:'wrap', fontSize: 10, marginBottom: 8 }}>
+                  <div>X: {Math.round(box.x)}</div>
+                  <div>Y: {Math.round(box.y)}</div>
+                  <div>W: {Math.round(box.w)}</div>
+                  <div>H: {Math.round(box.h)}</div>
+                </div>
+                {/* Category map controls moved above */}
                 <div style={{ marginBottom: 8 }}>
                   <label style={{ fontSize: 11, color: '#b0b0b0' }}>Category (ID · Name):</label>
                   {(() => {
                     const box = boxes.find(b => b.id === selectedId);
                     if (!box || !box.classListOpen) return null;
                     return (
-                      <div style={{ color:'#ff4d4f', fontSize: 11, marginTop: 6, marginBottom: 4 }}>Select a class — double‑click to lock</div>
+                      <div style={{ color:'#ff4d4f', fontSize: 13, fontWeight: 700, marginTop: 6, marginBottom: 6 }}>Select a class — double‑click to lock</div>
                     );
                   })()}
                   <select
@@ -1553,11 +1722,7 @@ const ObjectDetectionTool = () => {
             );
           })()}
           
-          {/* Statistics */}
-          <div style={{ marginBottom: 15, fontSize: 11 }}>
-            <div>Current Frame Boxes: {(boundingBoxes[currentFrameIndex] || []).length}</div>
-            <div>Total Annotated Frames: {Object.keys(annotations).length}</div>
-          </div>
+          {/* Statistics removed as requested */}
           
           {/* Export button */}
           {/* Frame-level tags input */}
