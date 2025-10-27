@@ -19,7 +19,7 @@
   top: 0;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: 12px; /* lift background a bit to avoid bright strip touching OS dock */
   background-image: 
     radial-gradient(circle at 20% 80%, rgba(0, 255, 150, 0.15) 0%, transparent 50%),
     radial-gradient(circle at 80% 20%, rgba(0, 123, 255, 0.15) 0%, transparent 50%),
@@ -341,7 +341,7 @@
   height: 100%;
   background: rgba(15, 52, 96, 0.3);
   border-radius: 8px;
-  border: 1px solid rgba(0, 255, 150, 0.3);
+  border: none; /* remove border to avoid visible gap */
   overflow: hidden;
 }
 
@@ -366,19 +366,19 @@
 
 .video-player-container {
   flex: 1;
-  padding: 10px;
+  padding: 0; /* remove inner padding to eliminate gap */
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
+  background: transparent; /* remove default background */
 }
 
+/* remove bottom action bar decorative border to avoid bright strip */
 .video-preview-actions {
-  padding: 8px 12px;
-  background: rgba(26, 26, 46, 0.8);
-  border-top: 1px solid rgba(0, 255, 150, 0.3);
-  display: flex;
-  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border-top: none;
+  display: none;
 }
 
 /* Data source selection page style */
@@ -390,7 +390,7 @@
   background: linear-gradient(180deg, rgba(26, 26, 46, 0.8) 0%, rgba(22, 33, 62, 0.9) 100%);
   padding: 12px;
   border-right: 1px solid rgba(0, 255, 150, 0.4);
-  overflow-y: auto;
+  overflow-y: scroll; /* always show vertical scrollbar */
   backdrop-filter: blur(10px);
 }
 
@@ -418,7 +418,8 @@
   flex-direction: column;
   gap: 8px;
   justify-content: flex-start;
-  flex: 1;
+  /* stop taking up remaining height so Saved Progress sits directly below */
+  flex: 0 0 auto;
 }
 
 .option-card {
