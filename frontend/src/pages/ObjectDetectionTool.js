@@ -131,6 +131,18 @@ const ObjectDetectionTool = () => {
   const [zoomCenter, setZoomCenter] = React.useState({ x: 0, y: 0 }); // 缩放中心点
   const [panX, setPanX] = React.useState(0);
   const [panY, setPanY] = React.useState(0);
+  const frameUrlsRef = React.useRef([]);
+  React.useEffect(() => { frameUrlsRef.current = frameUrls; }, [frameUrls]);
+  // Hide boxes on current frame
+  const [hideBoxes, setHideBoxes] = React.useState(false);
+  React.useEffect(() => { setHideBoxes(false); }, [currentFrameIndex]);
+  // Save/Load progress state
+  const [saveModalOpen, setSaveModalOpen] = React.useState(false);
+  const [loadModalOpen, setLoadModalOpen] = React.useState(false);
+  const [archiveName, setArchiveName] = React.useState("");
+  const [loadName, setLoadName] = React.useState("");
+  const [savedArchives, setSavedArchives] = React.useState([]);
+  const [openingArchive, setOpeningArchive] = React.useState("");
 
   // --- CLASS COLORS ---
   const CLASS_PALETTE = [
@@ -159,6 +171,181 @@ const ObjectDetectionTool = () => {
       const b = parseInt(hex.slice(5,7), 16);
       return `rgba(${r},${g},${b},${alpha})`;
     } catch { return `rgba(255,255,255,${alpha})`; }
+  }
+
+  // ===== Save/Load Helpers =====
+  function encode(obj) { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
+  function decode(b64) { return JSON.parse(decodeURIComponent(escape(atob(b64)))); }
+  async function saveProgress() {
+    try {
+      const base = (archiveName && archiveName.trim()) || new Date().toISOString().replace(/[:.]/g,'-');
+      const name = base.toLowerCase().replace(/[^a-z0-9-_]/g, '-').replace(/-{2,}/g, '-').slice(0, 64);
+      // Warn when overwriting an existing archive with the same name
+      try {
+        if (localStorage.getItem(`od_archive_${name}`)) {
+          const ok = window.confirm(`Archive "${name}" already exists. Overwrite?`);
+          if (!ok) { return; }
+        }
+      } catch {}
+      const payload = {
+        t: Date.now(),
+        dataSource,
+        localFolderHint: (dataSource === 'local') ? (localFolderFiles?.[0]?.file?.webkitRelativePath?.split('/')[0] || '') : '',
+        s3VideoKey: (dataSource === 's3') ? currentS3Key : '',
+        // do not store big frameUrls to avoid localStorage quota
+        frameCount: frameUrls?.length || 0,
+        currentFrameIndex,
+        frameBoxes,
+        annotations,
+        categoryMaps,
+        currentMapKey,
+        savedImageNames: (dataSource === 'local') ? (localImageList || []).map(it => it.name) : undefined,
+      };
+      const blob = encode(payload);
+      localStorage.setItem(`od_archive_${name}`, blob);
+      // store unencrypted meta for listing
+      localStorage.setItem(`od_archive_meta_${name}`, JSON.stringify({ updatedAt: Date.now() }));
+      setSaveModalOpen(false);
+      alert('Progress saved');
+      refreshSavedArchives();
+      setArchiveName("");
+    } catch (e) { alert('Save failed'); }
+  }
+
+  async function saveProgressQuick() { archiveName || setArchiveName(""); await saveProgress(); }
+  async function loadProgress(nameOverride) {
+    try {
+      const name = nameOverride || loadName;
+      const b64 = localStorage.getItem(`od_archive_${name}`);
+      if (!b64) { alert('Archive not found'); return; }
+      const payload = decode(b64);
+      setCategoryMaps(payload.categoryMaps || {});
+      setCurrentMapKey(payload.currentMapKey || '');
+      setOpeningArchive(name);
+      let totalFrames = 0;
+      if (payload.dataSource === 's3' && payload.s3VideoKey) {
+        await loadFramesFromS3Key(payload.s3VideoKey);
+        // 等一帧确保 frameUrls 已更新
+        await new Promise(res => requestAnimationFrame(res));
+        totalFrames = frameUrlsRef.current.length || 0;
+      } else if (payload.dataSource === 'local') {
+        totalFrames = await restoreLocalFromPicker(payload) || 0;
+      }
+      if (payload.frameBoxes) setFrameBoxes(payload.frameBoxes);
+      if (payload.annotations) setAnnotations(payload.annotations);
+      const target = Math.max(0, Math.min(payload.currentFrameIndex || 0, Math.max(totalFrames - 1, 0)));
+      setCurrentFrameIndex(target);
+      setLoadModalOpen(false);
+    } catch (e) { alert('Load failed'); }
+    finally { setOpeningArchive(""); }
+  }
+
+  // Re-link local folder using File System Access API, map by filename, and restore boxes/annotations
+  async function restoreLocalFromPicker(saved) {
+    try {
+      let dirHandle = await idbGet(`handle_${saved && saved.t ? '' : ''}${loadName || ''}`);
+      // Fallback to generic key if name-based missing
+      if (!dirHandle) dirHandle = await idbGet('handle_default');
+      // If no stored handle or permission denied, interactively ask once
+      if (!dirHandle || (await dirHandle.requestPermission({ mode:'read' })) !== 'granted') {
+        if (!window.showDirectoryPicker) {
+          alert('Your browser does not support directory picker. Please click Local Upload to select the folder, then try Open again.');
+          return;
+        }
+        dirHandle = await window.showDirectoryPicker();
+        if (await dirHandle.requestPermission({ mode:'read' }) === 'granted') {
+          await idbSet('handle_default', dirHandle);
+          if (loadName) await idbSet(`handle_${loadName}`, dirHandle);
+        }
+      }
+      const imageItems = [];
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (/(\.jpg|\.jpeg|\.png)$/i.test(name) && handle.kind === 'file') {
+          const file = await handle.getFile();
+          const url = URL.createObjectURL(file);
+          // obtain dimensions
+          const dims = await new Promise(resolve => { const img = new Image(); img.onload = ()=> resolve({w:img.naturalWidth,h:img.naturalHeight}); img.src = url; });
+          imageItems.push({ name, file, url, width: dims.w, height: dims.h });
+        }
+      }
+      // sort by name for deterministic order
+      imageItems.sort((a,b)=> a.name.localeCompare(b.name, undefined, { numeric:true, sensitivity:'base' }));
+      setLocalImageList(imageItems);
+      setFrameUrls(imageItems.map(it=>it.url));
+      // remap saved frameBoxes/annotations by filename index
+      const savedNames = Array.isArray(saved.savedImageNames) ? saved.savedImageNames : [];
+      if (savedNames.length > 0) {
+        const newFrameBoxes = {};
+        const newAnnotations = {};
+        imageItems.forEach((it, newIdx) => {
+          const oldIdx = savedNames.indexOf(it.name);
+          if (oldIdx >= 0) {
+            if (saved.frameBoxes && saved.frameBoxes[oldIdx] != null) newFrameBoxes[newIdx] = saved.frameBoxes[oldIdx];
+            if (saved.annotations && saved.annotations[oldIdx] != null) newAnnotations[newIdx] = saved.annotations[oldIdx];
+          }
+        });
+        if (Object.keys(newFrameBoxes).length > 0) setFrameBoxes(newFrameBoxes);
+        if (Object.keys(newAnnotations).length > 0) setAnnotations(newAnnotations);
+      }
+      return imageItems.length;
+    } catch (e) {
+      console.warn('restoreLocalFromPicker failed', e);
+    }
+  }
+
+  function refreshSavedArchives() {
+    try {
+      const items = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i) || "";
+        if (key.startsWith('od_archive_meta_')) {
+          const name = key.replace('od_archive_meta_', '');
+          let metaTs = 0;
+          try { const m = JSON.parse(localStorage.getItem(key) || '{}'); metaTs = m.updatedAt || 0; } catch {}
+          items.push({ name, updatedAt: metaTs });
+        }
+      }
+      items.sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0));
+      setSavedArchives(items.map(it=>it.name));
+      // scroll to top so newest is visible
+      setTimeout(()=>{
+        const el = document.getElementById('saved-progress-list');
+        if (el) el.scrollTop = 0;
+      }, 0);
+    } catch {}
+  }
+
+  React.useEffect(() => { refreshSavedArchives(); }, []);
+
+  // ===== IndexedDB helpers to persist DirectoryHandle (so future opens don't prompt) =====
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = window.indexedDB.open('od_progress_store', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('handles')) db.createObjectStore('handles');
+      };
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => resolve(req.result);
+    });
+  }
+  async function idbSet(key, value) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function idbGet(key) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('handles', 'readonly');
+      const req = tx.objectStore('handles').get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
   }
 
   // --- UNDO/REDO SYSTEM ---
@@ -362,14 +549,11 @@ const ObjectDetectionTool = () => {
     const scaledDisplayHeight = displayHeight * zoom;
     
     // 由于图片使用 transform: scale() 且 transformOrigin: 'center center'
-    // 缩放后的偏移量需要重新计算
+    // 缩放后的偏移量需要重新计算，并始终叠加 pan（即使在 1x 缩放下也跟随）
     let scaledOffsetX = offsetX - (scaledDisplayWidth - displayWidth) / 2;
     let scaledOffsetY = offsetY - (scaledDisplayHeight - displayHeight) / 2;
-    // Apply manual pan only when zoomed in (>1)
-    if (zoom > 1) {
-      scaledOffsetX += panX;
-      scaledOffsetY += panY;
-    }
+    scaledOffsetX += panX;
+    scaledOffsetY += panY;
   
     return {
       left: canvasRect.left + scaledOffsetX, // ← 这是图像实际显示区域的左上角（相对屏幕）
@@ -404,10 +588,9 @@ const ObjectDetectionTool = () => {
 
     // 计算新的缩放比例
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.1, Math.min(zoom * delta, 5)); // 限制缩放范围 0.1x - 5x
-
-    // 若接近或小于 1，则重置并居中
-    if (newZoom <= 1 || Math.abs(newZoom - 1) < 0.02) {
+    const newZoom = Math.max(1, Math.min(zoom * delta, 5)); // 限制缩放范围 1x - 5x（最小 1 倍）
+    // 当缩回到 1x 时，自动居中并清零平移
+    if (newZoom === 1) {
       setZoom(1);
       setPanX(0);
       setPanY(0);
@@ -922,11 +1105,25 @@ const ObjectDetectionTool = () => {
   const [mcdbLimit, setMcdbLimit] = useState(50);
   const [mcdbItems, setMcdbItems] = useState([]);
   const [mcdbLoading, setMcdbLoading] = useState(false);
+  const [s3LoadingKey, setS3LoadingKey] = useState("");
+  const [s3LoadProgress, setS3LoadProgress] = useState(0);
+  const s3ProgressTimerRef = React.useRef(null);
 
   async function loadFramesFromS3Key(key) {
     if (!key) { alert('Missing S3 video key'); return; }
     try {
       setIsLoadingFrames(true);
+      setDataSource('s3');
+      setS3LoadingKey(key);
+      // optimistic progress: ramp to 95% in ~10s, finish on response
+      if (s3ProgressTimerRef.current) { clearInterval(s3ProgressTimerRef.current); s3ProgressTimerRef.current = null; }
+      setS3LoadProgress(0);
+      const startTs = Date.now();
+      s3ProgressTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTs;
+        const pct = Math.min(95, Math.floor((elapsed / 10000) * 100)); // 10s to 95%
+        setS3LoadProgress(pct);
+      }, 100);
         setFrameUrls([]);
       setCurrentFrameIndex(0);
       setCurrentS3Key(key);
@@ -935,11 +1132,14 @@ const ObjectDetectionTool = () => {
       const frames = response.data?.frames || response.frames || [];
       setFrameUrls(frames);
       setViewMode('annotate');
+      setS3LoadProgress(100);
     } catch (e) {
       console.error(e);
       alert('Extract frames failed');
     } finally {
       setIsLoadingFrames(false);
+      if (s3ProgressTimerRef.current) { clearInterval(s3ProgressTimerRef.current); s3ProgressTimerRef.current = null; }
+      setTimeout(() => { setS3LoadProgress(0); setS3LoadingKey(""); }, 500);
     }
   }
 
@@ -1269,6 +1469,32 @@ const ObjectDetectionTool = () => {
                 <p>Connect directly to S3 bucket</p>
               </div>
             </div>
+            {/* Saved Progress moved up, directly below S3 link */}
+            <div style={{ marginTop: 10 }}>
+              <h3 style={{ color:'#eaf6ff' }}>Saved Progress</h3>
+              <div id="saved-progress-list" style={{ maxHeight: 260, overflowY:'auto', border:'1px solid rgba(39,211,162,0.35)', borderRadius:8, background:'rgba(0,0,0,0.25)' }}>
+                {savedArchives.length === 0 ? (
+                  <div style={{ padding:10, color:'#9fbac9' }}>No archives yet</div>
+                ) : savedArchives.map(name => (
+                  <div key={name} style={{ padding:'8px 10px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+                    <div style={{ color:'#eaf6ff', fontSize:12, overflow:'hidden', textOverflow:'ellipsis', marginBottom:6 }}>{name}</div>
+                    <div style={{ display:'flex', gap:8, alignItems:'center', justifyContent:'space-between' }}>
+                      <div style={{ display:'flex', flexDirection:'column', gap:4, width:110 }}>
+                        <button className="test-button" style={{ padding:'2px 6px', fontSize:11, width:110 }} onClick={async ()=>{ await loadProgress(name); }} disabled={openingArchive===name || isLoadingFrames}>
+                          {(openingArchive===name && isLoadingFrames) ? `Open ${s3LoadProgress}%` : 'Open'}
+                        </button>
+                        {(openingArchive===name && isLoadingFrames) && (
+                          <div style={{ width:'100%', height:6, background:'rgba(233,238,245,0.6)', borderRadius:4, overflow:'hidden' }}>
+                            <div style={{ width:`${s3LoadProgress}%`, height:'100%', background:'#00ff96', transition:'width 120ms ease' }} />
+                          </div>
+                        )}
+                      </div>
+                      <button className="test-button" style={{ padding:'2px 6px', fontSize:11, background:'#3b1f24' }} onClick={()=>{ if (!confirm(`Delete archive \"${name}\"? This cannot be undone.`)) return; try { localStorage.removeItem(`od_archive_${name}`); localStorage.removeItem(`od_archive_meta_${name}`);} catch {} refreshSavedArchives(); }}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
             {/* Local file input */}
             {dataSource === 'local' && (
               <>
@@ -1348,9 +1574,16 @@ const ObjectDetectionTool = () => {
                             <div style={{ color:'#1a55a5', fontWeight:600 }}>#{item.id}</div>
                             <div style={{ color:'#6a7b91', fontSize:12, wordBreak:'break-all' }}>{frontUrl || 'No front video'}</div>
                           </div>
-                          <button className="test-button" disabled={!key} onClick={()=> loadFramesFromS3Key(key)} style={{ minWidth:160 }}>
-                            Load Frames (3 fps)
-                </button>
+                          <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, minWidth:200 }}>
+                            <button className="test-button" disabled={!key || (s3LoadingKey===key && isLoadingFrames)} onClick={()=> loadFramesFromS3Key(key)} style={{ minWidth:200 }}>
+                              {(s3LoadingKey===key && isLoadingFrames) ? (`Loading… ${s3LoadProgress}%`) : 'Load Frames (3 fps)'}
+                            </button>
+                            {(s3LoadingKey===key && isLoadingFrames) && (
+                              <div style={{ width:200, height:6, background:'#e9eef5', borderRadius:4, overflow:'hidden' }}>
+                                <div style={{ width:`${s3LoadProgress}%`, height:'100%', background:'#00ff96', transition:'width 120ms ease' }} />
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -1360,21 +1593,55 @@ const ObjectDetectionTool = () => {
         </div>
           ) : (
           /* 预览容器：优先显示已加载的帧（本地或S3），否则显示本地视频或提示 */
-          <div className="video-preview-container" style={{ width: '100%', maxWidth: 900, minHeight: 480, margin: '0 auto', background: 'rgba(99, 130, 169, 0.3)' , display:'flex'}}>
-            <div className="video-player-container" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="video-preview-container" style={{ width: '100%', maxWidth: '100%', height: 'calc(100vh - 20px)', margin: 0, padding: 0, background: 'rgba(226, 232, 240, 0.3)', borderRadius: 0, display:'flex' }}>
+            <div className="video-player-container" style={{flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'flex-start', width: '100%', height: '100%', padding: 0, margin: 0, boxSizing: 'border-box', background: 'transparent', borderRadius: 0, overflow:'hidden' }}>
               {frameUrls.length > 0 ? (
                 <>
-                {/* Image name outside the image container */}
-                <div style={{ textAlign:'center', color:'#cfe7ff', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{getCurrentImageName()}</div>
+                {/* Top bar: image name + pager + progress */}
+                <div style={{ display:'flex', flexDirection:'column', gap:4, marginBottom: 0, width:'100%', padding:'0px 6px 0 6px', boxSizing:'border-box' }}>
+                  <div style={{ display:'flex', gap:6, alignItems:'center', justifyContent:'flex-end', marginBottom:4 }} />
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
+                    <div style={{ color:'#cfe7ff', fontSize: 11, fontWeight: 600, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{getCurrentImageName()}</div>
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <label style={{ display:'flex', alignItems:'center', gap:6, color:'#cfe7ff', fontSize:11 }}>
+                        <input type="checkbox" checked={hideBoxes} onChange={(e)=> setHideBoxes(e.target.checked)} />
+                        Hide boxes
+                      </label>
+                      <button
+                        className="test-button"
+                        onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
+                        disabled={currentFrameIndex === 0}
+                        style={{ padding: '2px 6px', fontSize: '11px', minWidth: 24 }}
+                      >⏮️</button>
+                      <span style={{ fontWeight: 600, color: '#fff', fontSize: 11, minWidth: '52px', textAlign: 'center' }}>
+                        {currentFrameIndex + 1} / {frameUrls.length}
+                      </span>
+                      <button
+                        className="test-button"
+                        onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
+                        disabled={currentFrameIndex === frameUrls.length - 1}
+                        style={{ padding: '2px 6px', fontSize: '11px', minWidth: 24 }}
+                      >⏭️</button>
+                    </div>
+                  </div>
+                  {(() => {
+                    const percent = frameUrls.length > 0 ? Math.round(((currentFrameIndex + 1) / frameUrls.length) * 100) : 0;
+                    return (
+                      <div style={{ width: '100%', height: 3, background:'rgba(255,255,255,0.14)', borderRadius: 3, overflow:'hidden' }}>
+                        <div style={{ width: `${percent}%`, height: '100%', background:'#00ff96', transition:'width 120ms ease' }} />
+                      </div>
+                    );
+                  })()}
+                </div>
                 {/* Only the image inside the main container */}
-                <div style={{ position: 'relative', width: '100%', minHeight: '400px' }}>
+                <div style={{ position: 'relative', width: '100%', minHeight: 0, flex: 1, marginBottom: 10 }}>
                   <div
                     ref={canvasRef}
                     style={{
                       position: 'relative',
                       width: '100%',
-                      height: 'calc(100vh - 310px)',
-                      borderRadius: 12,
+                      height: 'calc(100vh - 200px)',
+                      borderRadius: 0,
                       userSelect: 'none',
                       overflow: 'hidden',
                       cursor: mode === 'drawing' ? 'crosshair' : 'default',
@@ -1416,7 +1683,7 @@ const ObjectDetectionTool = () => {
                       />
                     )}
                     {/* bounding box 层 */}
-                    {(() => {
+                    {hideBoxes ? null : (() => {
                       const info = getImgInfo();
                       if (!info) return null;
                       return boxes.map(box => {
@@ -1482,34 +1749,7 @@ const ObjectDetectionTool = () => {
                     
                   </div>
                 </div>
-                {/* Pagination + progress (below entire middle area, always visible) */}
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6, marginTop: 4 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <button
-                      className="test-button"
-                      onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
-                      disabled={currentFrameIndex === 0}
-                      style={{ padding: '4px 8px', fontSize: '12px', minWidth: 28 }}
-                    >⏮️</button>
-                    <span style={{ fontWeight: 600, color: '#fff', fontSize: 12, minWidth: '64px', textAlign: 'center' }}>
-                      {currentFrameIndex + 1} / {frameUrls.length}
-                    </span>
-                    <button
-                      className="test-button"
-                      onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
-                      disabled={currentFrameIndex === frameUrls.length - 1}
-                      style={{ padding: '4px 8px', fontSize: '12px', minWidth: 28 }}
-                    >⏭️</button>
-                  </div>
-                  {(() => {
-                    const percent = frameUrls.length > 0 ? Math.round(((currentFrameIndex + 1) / frameUrls.length) * 100) : 0;
-                    return (
-                      <div style={{ width: '100%', maxWidth: 900, height: 6, background:'rgba(255,255,255,0.18)', borderRadius: 5, overflow:'hidden' }}>
-                        <div style={{ width: `${percent}%`, height: '100%', background:'#00ff96', transition:'width 120ms ease' }} />
-                      </div>
-                    );
-                  })()}
-                </div>
+                {/* Pagination + progress moved to top bar */}
                 </>
               ) : (dataSource === 'local' && localVideoUrl) ? (
                 <video src={localVideoUrl} controls style={{ width: '100%', maxWidth: 800, background: '#000', borderRadius: 12 }} />
@@ -1524,9 +1764,27 @@ const ObjectDetectionTool = () => {
             </div>
           </div>
           )}
+        {/* Save Modal */}
+        {saveModalOpen && (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 }}>
+            <div style={{ background:'#0d2540', padding:16, borderRadius:8, width:360, color:'#fff' }}>
+              <div style={{ fontWeight:700, marginBottom:8 }}>Save Progress</div>
+              <input placeholder="Archive name" value={archiveName} onChange={e=>setArchiveName(e.target.value)} style={{ width:'100%', marginBottom:8 }} />
+              {/* password removed per request */}
+              <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                <button className="test-button" onClick={()=> setSaveModalOpen(false)}>Cancel</button>
+                <button className="test-button" onClick={saveProgress}>Save</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Load via records; dedicated Load modal removed per request */}
         </div>
         {/* Right Panel: Annotation Panel */}
         <div className="selected-points-container">
+            <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8, gap:6 }}>
+              <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=> setSaveModalOpen(true)}>Save</button>
+            </div>
           {/* ...右侧 annotation panel 内容，全部用 AnnotationTool.js 的 className ... */}
           {/* Annotation instructions removed as requested */}
 
