@@ -135,7 +135,69 @@ const ObjectDetectionTool = () => {
   React.useEffect(() => { frameUrlsRef.current = frameUrls; }, [frameUrls]);
   // Hide boxes on current frame
   const [hideBoxes, setHideBoxes] = React.useState(false);
-  React.useEffect(() => { setHideBoxes(false); }, [currentFrameIndex]);
+  React.useEffect(() => {
+    setHideBoxes(false);
+    try {
+      const baseSig = JSON.stringify(frameBoxes[currentFrameIndex] || []);
+      initialSigRef.current[currentFrameIndex] = baseSig;
+    } catch {}
+  }, [currentFrameIndex]);
+  // If boxes change after verified, mark unverified
+  React.useEffect(() => {
+    try {
+      const sig = JSON.stringify(boxes || []);
+      const idx = currentFrameIndex;
+      const vsig = verifiedSigRef.current[idx];
+      if (verifiedFrames[idx] && vsig != null && sig !== vsig) {
+        setVerifiedFrames(prev => ({ ...prev, [idx]: false }));
+      }
+    } catch {}
+  }, [boxes, currentFrameIndex]);
+  // Delete current image (local only): remove frameUrls/current image, reindex boxes/annotations/tags
+  function deleteCurrentLocalImage() {
+    if (dataSource !== 'local') { alert('Delete is available for local folder only.'); return; }
+    if (!frameUrls || frameUrls.length === 0) return;
+    const idx = currentFrameIndex;
+    const ok = window.confirm(`Delete current image #${idx+1}? This will remove it from this session and reindex annotations.`);
+    if (!ok) return;
+    const nextUrls = frameUrls.slice(0, idx).concat(frameUrls.slice(idx+1));
+    setFrameUrls(nextUrls);
+    // reindex frameBoxes
+    const nextFrameBoxes = {};
+    Object.keys(frameBoxes).forEach(k => {
+      const i = Number(k);
+      if (i < idx) nextFrameBoxes[i] = frameBoxes[i];
+      else if (i > idx) nextFrameBoxes[i-1] = frameBoxes[i];
+    });
+    setFrameBoxes(nextFrameBoxes);
+    // reindex annotations
+    const nextAnn = {};
+    Object.keys(annotations).forEach(k => {
+      const i = Number(k);
+      if (i < idx) nextAnn[i] = annotations[i];
+      else if (i > idx) nextAnn[i-1] = annotations[i];
+    });
+    setAnnotations(nextAnn);
+    // reindex tags
+    const nextTags = {};
+    Object.keys(frameTags || {}).forEach(k => {
+      const i = Number(k);
+      if (i < idx) nextTags[i] = frameTags[i];
+      else if (i > idx) nextTags[i-1] = frameTags[i];
+    });
+    setFrameTags(nextTags);
+    // reindex verified flags
+    const nextVerified = {};
+    Object.keys(verifiedFrames || {}).forEach(k => {
+      const i = Number(k);
+      if (i < idx) nextVerified[i] = verifiedFrames[i];
+      else if (i > idx) nextVerified[i-1] = verifiedFrames[i];
+    });
+    setVerifiedFrames(nextVerified);
+    // adjust current index
+    const newIdx = Math.max(0, Math.min(idx, nextUrls.length - 1));
+    setCurrentFrameIndex(newIdx);
+  }
   // Save/Load progress state
   const [saveModalOpen, setSaveModalOpen] = React.useState(false);
   const [loadModalOpen, setLoadModalOpen] = React.useState(false);
@@ -143,6 +205,11 @@ const ObjectDetectionTool = () => {
   const [loadName, setLoadName] = React.useState("");
   const [savedArchives, setSavedArchives] = React.useState([]);
   const [openingArchive, setOpeningArchive] = React.useState("");
+  const [autoBackupEnabled, setAutoBackupEnabled] = React.useState(false);
+  // Verification state per frame
+  const [verifiedFrames, setVerifiedFrames] = React.useState({}); // {frameIndex: true}
+  const initialSigRef = React.useRef({}); // signature when entering a frame
+  const verifiedSigRef = React.useRef({}); // signature when verified
 
   // --- CLASS COLORS ---
   const CLASS_PALETTE = [
@@ -176,6 +243,104 @@ const ObjectDetectionTool = () => {
   // ===== Save/Load Helpers =====
   function encode(obj) { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
   function decode(b64) { return JSON.parse(decodeURIComponent(escape(atob(b64)))); }
+  function lsSet(key, value){ try{ localStorage.setItem(key, value); } catch{} }
+  function lsGet(key){ try{ return localStorage.getItem(key); } catch{ return null; } }
+
+  // ===== Auto Backup (rolling versions) =====
+  const BACKUP_KEY_PREFIX = 'od_autobackup_v1_';
+  const BACKUP_META_KEY = 'od_autobackup_meta'; // stores { latestTs }
+  const MAX_BACKUPS = 5;
+
+  const buildBackupPayload = React.useCallback(() => ({
+    t: Date.now(),
+    dataSource,
+    s3VideoKey: (dataSource === 's3') ? currentS3Key : '',
+    frameCount: frameUrls?.length || 0,
+    currentFrameIndex,
+    frameBoxes,
+    annotations,
+    categoryMaps,
+    currentMapKey,
+    verifiedFrames,
+    savedImageNames: (dataSource === 'local') ? (localImageList || []).map(it => it.name) : undefined,
+  }), [dataSource, currentS3Key, frameUrls, currentFrameIndex, frameBoxes, annotations, categoryMaps, currentMapKey, localImageList]);
+
+  const debouncedBackupRef = React.useRef(null);
+  function scheduleAutoBackup(){
+    if (!autoBackupEnabled) return;
+    if (debouncedBackupRef.current) clearTimeout(debouncedBackupRef.current);
+    debouncedBackupRef.current = setTimeout(()=>{
+      try {
+        const payload = buildBackupPayload();
+        const b64 = encode(payload);
+        // rotate keys
+        const now = Date.now();
+        const key = `${BACKUP_KEY_PREFIX}${now}`;
+        lsSet(key, b64);
+        // trim old backups
+        const keys = Object.keys(localStorage).filter(k=>k.startsWith(BACKUP_KEY_PREFIX)).sort();
+        while (keys.length > MAX_BACKUPS) {
+          const oldest = keys.shift();
+          try { localStorage.removeItem(oldest); } catch{}
+        }
+        lsSet(BACKUP_META_KEY, JSON.stringify({ latestTs: now }));
+      } catch{}
+    }, 1500);
+  }
+
+  // Trigger auto-backup on key state changes
+  React.useEffect(() => { scheduleAutoBackup(); }, [frameBoxes, annotations, currentFrameIndex, categoryMaps, currentMapKey, frameUrls, dataSource]);
+
+  function getLatestBackup(){
+    try {
+      const keys = Object.keys(localStorage).filter(k=>k.startsWith(BACKUP_KEY_PREFIX));
+      if (keys.length === 0) return null;
+      const latestKey = keys.sort().pop();
+      const b64 = lsGet(latestKey);
+      if (!b64) return null;
+      const payload = decode(b64);
+      return payload;
+    } catch { return null; }
+  }
+
+  async function loadFromBackup(){
+    const payload = getLatestBackup();
+    if (!payload) { alert('No backup found'); return; }
+    try {
+      setCategoryMaps(payload.categoryMaps || {});
+      setCurrentMapKey(payload.currentMapKey || '');
+      let totalFrames = 0;
+      if (payload.dataSource === 's3' && payload.s3VideoKey) {
+        await loadFramesFromS3Key(payload.s3VideoKey);
+        await new Promise(res => requestAnimationFrame(res));
+        totalFrames = frameUrlsRef.current.length || 0;
+      } else if (payload.dataSource === 'local') {
+        totalFrames = await restoreLocalFromPicker(payload) || 0;
+      }
+      if (payload.frameBoxes) setFrameBoxes(payload.frameBoxes);
+      if (payload.annotations) setAnnotations(payload.annotations);
+      const target = Math.max(0, Math.min(payload.currentFrameIndex || 0, Math.max(totalFrames - 1, 0)));
+      setCurrentFrameIndex(target);
+      alert('Backup restored');
+    } catch { alert('Failed to restore backup'); }
+  }
+
+  // Show prompt on mount if a backup newer than last manual load/save exists
+  React.useEffect(()=>{
+    try {
+      const meta = JSON.parse(lsGet(BACKUP_META_KEY) || 'null');
+      const latestTs = meta?.latestTs || 0;
+      const lastSeen = Number(lsGet('od_autobackup_last_seen') || 0);
+      if (autoBackupEnabled && latestTs > 0 && latestTs > lastSeen) {
+        setTimeout(()=>{
+          if (window.confirm('A backup was found from your last session. Restore it?')) {
+            loadFromBackup();
+          }
+          lsSet('od_autobackup_last_seen', String(Date.now()));
+        }, 0);
+      }
+    } catch {}
+  }, []);
   async function saveProgress() {
     try {
       const base = (archiveName && archiveName.trim()) || new Date().toISOString().replace(/[:.]/g,'-');
@@ -199,6 +364,7 @@ const ObjectDetectionTool = () => {
         annotations,
         categoryMaps,
         currentMapKey,
+        verifiedFrames,
         savedImageNames: (dataSource === 'local') ? (localImageList || []).map(it => it.name) : undefined,
       };
       const blob = encode(payload);
@@ -233,6 +399,7 @@ const ObjectDetectionTool = () => {
       }
       if (payload.frameBoxes) setFrameBoxes(payload.frameBoxes);
       if (payload.annotations) setAnnotations(payload.annotations);
+      if (payload.verifiedFrames) setVerifiedFrames(payload.verifiedFrames);
       const target = Math.max(0, Math.min(payload.currentFrameIndex || 0, Math.max(totalFrames - 1, 0)));
       setCurrentFrameIndex(target);
       setLoadModalOpen(false);
@@ -552,8 +719,8 @@ const ObjectDetectionTool = () => {
     // 缩放后的偏移量需要重新计算，并始终叠加 pan（即使在 1x 缩放下也跟随）
     let scaledOffsetX = offsetX - (scaledDisplayWidth - displayWidth) / 2;
     let scaledOffsetY = offsetY - (scaledDisplayHeight - displayHeight) / 2;
-    scaledOffsetX += panX;
-    scaledOffsetY += panY;
+      scaledOffsetX += panX;
+      scaledOffsetY += panY;
   
     return {
       left: canvasRect.left + scaledOffsetX, // ← 这是图像实际显示区域的左上角（相对屏幕）
@@ -1301,14 +1468,59 @@ const ObjectDetectionTool = () => {
     }
     if (exportFormat === 'combined') {
       const txtContent = lines.join('\n');
+      const tryFolder = async () => {
+        if (!window.showDirectoryPicker) return false;
+        try {
+          const dir = await window.showDirectoryPicker();
+          const file = await dir.getFileHandle('annotations.txt', { create: true });
+          const writable = await file.createWritable();
+          await writable.write(txtContent);
+          await writable.close();
+          alert('Exported to selected folder');
+          return true;
+        } catch (e) { return false; }
+      };
+      tryFolder().then(done => {
+        if (done) return;
       const blob = new Blob([txtContent], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'annotations.txt';
       a.click();
+      });
     } else {
-      // YOLO per-image export: bundle all .txt into one ZIP
+      const exportToFolder = async () => {
+        if (!window.showDirectoryPicker) return false;
+        try {
+          const dir = await window.showDirectoryPicker();
+          for (let i = 0; i < frameUrls.length; i++) {
+            const it = localImageList[i];
+            const boxes = frameBoxes[i] || [];
+            if (!it) continue;
+            const tagsStr = String(frameTags[i] || '').trim();
+            const linesTxt = boxes.map(b => {
+              const cls = (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1);
+              const cx = (b.x + b.w / 2) / it.width;
+              const cy = (b.y + b.h / 2) / it.height;
+              const ww = b.w / it.width;
+              const hh = b.h / it.height;
+              const base = `${cls} ${cx.toFixed(6)} ${cy.toFixed(6)} ${ww.toFixed(6)} ${hh.toFixed(6)}`;
+              const withTrack = `${base} ${b.trackingId || -1}`;
+              return tagsStr ? `${withTrack} ${tagsStr}` : withTrack;
+            }).join('\n');
+            const fh = await dir.getFileHandle(`${stem(it.name)}.txt`, { create: true });
+            const w = await fh.createWritable();
+            await w.write(linesTxt);
+            await w.close();
+          }
+          alert('Exported YOLO labels to selected folder');
+          return true;
+        } catch (e) { return false; }
+      };
+      exportToFolder().then(done => {
+        if (done) return;
+        // fallback: YOLO per-image export: bundle all .txt into one ZIP
       const zip = new JSZip();
       for (let i = 0; i < frameUrls.length; i++) {
         const it = localImageList[i];
@@ -1329,6 +1541,7 @@ const ObjectDetectionTool = () => {
       }
       zip.generateAsync({ type: 'blob' }).then((blob) => {
         saveAs(blob, 'annotations_yolo.zip');
+        });
       });
     }
   };
@@ -1472,6 +1685,10 @@ const ObjectDetectionTool = () => {
             {/* Saved Progress moved up, directly below S3 link */}
             <div style={{ marginTop: 10 }}>
               <h3 style={{ color:'#eaf6ff' }}>Saved Progress</h3>
+              <div style={{ display:'flex', gap:8, margin:'6px 0 10px 0' }}>
+                <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={loadFromBackup}>Load from backup</button>
+                <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=>{ const payload = buildBackupPayload(); try{ lsSet(`${BACKUP_KEY_PREFIX}${Date.now()}`, encode(payload)); alert('Backup saved'); } catch{ alert('Failed to save backup'); } }}>Backup now</button>
+              </div>
               <div id="saved-progress-list" style={{ maxHeight: 260, overflowY:'auto', border:'1px solid rgba(39,211,162,0.35)', borderRadius:8, background:'rgba(0,0,0,0.25)' }}>
                 {savedArchives.length === 0 ? (
                   <div style={{ padding:10, color:'#9fbac9' }}>No archives yet</div>
@@ -1577,7 +1794,7 @@ const ObjectDetectionTool = () => {
                           <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, minWidth:200 }}>
                             <button className="test-button" disabled={!key || (s3LoadingKey===key && isLoadingFrames)} onClick={()=> loadFramesFromS3Key(key)} style={{ minWidth:200 }}>
                               {(s3LoadingKey===key && isLoadingFrames) ? (`Loading… ${s3LoadProgress}%`) : 'Load Frames (3 fps)'}
-                            </button>
+                </button>
                             {(s3LoadingKey===key && isLoadingFrames) && (
                               <div style={{ width:200, height:6, background:'#e9eef5', borderRadius:4, overflow:'hidden' }}>
                                 <div style={{ width:`${s3LoadProgress}%`, height:'100%', background:'#00ff96', transition:'width 120ms ease' }} />
@@ -1609,7 +1826,28 @@ const ObjectDetectionTool = () => {
                       </label>
                       <button
                         className="test-button"
-                        onClick={() => setCurrentFrameIndex(i => Math.max(0, i - 1))}
+                        onClick={() => { const idx = currentFrameIndex; verifiedSigRef.current[idx] = JSON.stringify(boxes || []); setVerifiedFrames(prev=>({ ...prev, [idx]: true })); initialSigRef.current[idx] = JSON.stringify(boxes || []); }}
+                        style={{ padding:'4px 12px', fontSize:12, minWidth:96, background:'#00ff96', color:'#002', border:'none', borderRadius:8 }}
+                        title="Mark current image as verified"
+                      >VERIFY</button>
+                      {dataSource === 'local' && (
+                        <button className="test-button" onClick={deleteCurrentLocalImage} title="Delete current image (local only)" style={{ padding:'4px 12px', fontSize:12, minWidth:96, background:'#ff4d4f', color:'#fff', border:'none', borderRadius:8 }}>
+                          DELETE IMAGE
+                        </button>
+                      )}
+                      <button
+                        className="test-button"
+                        onClick={() => {
+                          const idx = currentFrameIndex;
+                          const currentSig = JSON.stringify(boxes || []);
+                          const baseSig = initialSigRef.current[idx] || JSON.stringify(frameBoxes[idx] || []);
+                          const modified = currentSig !== baseSig;
+                          if (modified && !verifiedFrames[idx]) {
+                            const ok = window.confirm('This image has unverified changes. Continue without verifying?');
+                            if (!ok) return;
+                          }
+                          setCurrentFrameIndex(i => Math.max(0, i - 1));
+                        }}
                         disabled={currentFrameIndex === 0}
                         style={{ padding: '2px 6px', fontSize: '11px', minWidth: 24 }}
                       >⏮️</button>
@@ -1618,17 +1856,31 @@ const ObjectDetectionTool = () => {
                       </span>
                       <button
                         className="test-button"
-                        onClick={() => setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1))}
+                        onClick={() => {
+                          const idx = currentFrameIndex;
+                          const currentSig = JSON.stringify(boxes || []);
+                          const baseSig = initialSigRef.current[idx] || JSON.stringify(frameBoxes[idx] || []);
+                          const modified = currentSig !== baseSig;
+                          if (modified && !verifiedFrames[idx]) {
+                            const ok = window.confirm('This image has unverified changes. Continue without verifying?');
+                            if (!ok) return;
+                          }
+                          setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1));
+                        }}
                         disabled={currentFrameIndex === frameUrls.length - 1}
                         style={{ padding: '2px 6px', fontSize: '11px', minWidth: 24 }}
                       >⏭️</button>
                     </div>
                   </div>
                   {(() => {
-                    const percent = frameUrls.length > 0 ? Math.round(((currentFrameIndex + 1) / frameUrls.length) * 100) : 0;
+                    const n = frameUrls.length;
                     return (
-                      <div style={{ width: '100%', height: 3, background:'rgba(255,255,255,0.14)', borderRadius: 3, overflow:'hidden' }}>
-                        <div style={{ width: `${percent}%`, height: '100%', background:'#00ff96', transition:'width 120ms ease' }} />
+                      <div style={{ width:'100%', height:6, background:'rgba(255,255,255,0.12)', borderRadius:4, padding:1, boxSizing:'border-box' }}>
+                        <div style={{ display:'flex', gap:1, width:'100%', height:'100%' }}>
+                          {Array.from({ length: n }).map((_, i) => (
+                            <div key={i} style={{ flex:1, height:'100%', background: verifiedFrames[i] ? '#00ff96' : '#ff6b6b', opacity: i===currentFrameIndex ? 1 : 0.85, outline: i===currentFrameIndex ? '1px solid rgba(255,255,255,0.8)' : 'none', outlineOffset: -1 }} />
+                          ))}
+                        </div>
                       </div>
                     );
                   })()}
@@ -1702,9 +1954,9 @@ const ObjectDetectionTool = () => {
                         return (
                           <div key={box.id} style={{ position: 'absolute', left, top, width, height, zIndex: 10, pointerEvents: 'none' }}>
                             <div style={{ position: 'absolute', inset: 0, border: stroke, background: fill }} />
-                            <div
-                              style={{
-                                position: 'absolute',
+                          <div
+                            style={{
+                              position: 'absolute',
                                 left: 0,
                                 top: -18,
                                 background: strokeColor,
@@ -1784,18 +2036,18 @@ const ObjectDetectionTool = () => {
         <div className="selected-points-container">
             <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8, gap:6 }}>
               <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=> setSaveModalOpen(true)}>Save</button>
-            </div>
+          </div>
           {/* ...右侧 annotation panel 内容，全部用 AnnotationTool.js 的 className ... */}
           {/* Annotation instructions removed as requested */}
 
           {/* Category map presets and editor (placed ABOVE Selected Box Info) */}
           <div style={{ marginBottom: 10, padding: '8px 10px', border:'1px solid #2a9d8f', borderRadius:8, maxWidth:'100%' }}>
-            <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:8 }}>
-              <label style={{ color:'#cfe7ff', fontSize:12 }}>Category map:</label>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:8 }}>
+                    <label style={{ color:'#cfe7ff', fontSize:12 }}>Category map:</label>
               <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                 <select className="select-input" value={currentMapKey} onChange={e=> setCurrentMapKey(e.target.value)} style={{ background:'#0d2540', color:'#eaf6ff', width:'100%', height:28, fontSize:12, padding:'2px 6px' }}>
-                  {Object.keys(categoryMaps).map(k => (<option key={k} value={k}>{k}</option>))}
-                </select>
+                      {Object.keys(categoryMaps).map(k => (<option key={k} value={k}>{k}</option>))}
+                    </select>
                 <button
                   title="Delete map"
                   disabled={["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)}
@@ -1831,20 +2083,20 @@ const ObjectDetectionTool = () => {
               </div>
               <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
                 <button className="test-button" style={{ flex:'1 1 110px', minWidth:110, padding:'4px 8px', fontSize:12 }} onClick={()=>{
-                  const base = prompt('New map name?');
-                  if (!base) return;
-                  const copied = JSON.parse(JSON.stringify(classIdToName));
-                  const next = { ...categoryMaps, [base]: copied };
-                  setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
-                }}>Duplicate</button>
+                        const base = prompt('New map name?');
+                        if (!base) return;
+                        const copied = JSON.parse(JSON.stringify(classIdToName));
+                        const next = { ...categoryMaps, [base]: copied };
+                        setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
+                      }}>Duplicate</button>
                 <button className="test-button" style={{ flex:'1 1 90px', minWidth:90, padding:'4px 8px', fontSize:12 }} onClick={()=>{
-                  const base = prompt('New empty map name?');
-                  if (!base) return;
-                  const next = { ...categoryMaps, [base]: {} };
-                  setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
-                }}>New</button>
-              </div>
-            </div>
+                        const base = prompt('New empty map name?');
+                        if (!base) return;
+                        const next = { ...categoryMaps, [base]: {} };
+                        setCategoryMaps(next); persistCategoryMaps(next); setCurrentMapKey(base);
+                      }}>New</button>
+                    </div>
+                  </div>
             {(!["YOLO Train Set", "YOLO Test Set"].includes(currentMapKey)) && (
               <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                 <button
@@ -1855,29 +2107,29 @@ const ObjectDetectionTool = () => {
                     if (name==null) return;
                     const trimmed = (name||'').trim();
                     if (!trimmed) return;
-                    const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
+                      const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
                     const ids = Object.keys(nextMap).map(n => Number(n)).filter(Number.isFinite);
                     const nextId = ids.length ? Math.max(...ids) + 1 : 0;
                     nextMap[nextId] = trimmed;
-                    const next = { ...categoryMaps, [currentMapKey]: nextMap };
-                    setCategoryMaps(next); persistCategoryMaps(next);
+                      const next = { ...categoryMaps, [currentMapKey]: nextMap };
+                      setCategoryMaps(next); persistCategoryMaps(next);
                   }}
                 >+ Add Class</button>
                 <button
                   className="test-button"
                   style={{ width:'100%', padding:'6px 8px', fontSize:12 }}
                   onClick={()=>{
-                    const idStr = prompt('Remove class id (number):');
-                    if (idStr==null) return; const id = Number(idStr); if (!Number.isFinite(id)) return;
-                    const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
-                    delete nextMap[id];
-                    const next = { ...categoryMaps, [currentMapKey]: nextMap };
-                    setCategoryMaps(next); persistCategoryMaps(next);
+                      const idStr = prompt('Remove class id (number):');
+                      if (idStr==null) return; const id = Number(idStr); if (!Number.isFinite(id)) return;
+                      const nextMap = { ...(categoryMaps[currentMapKey]||{}) };
+                      delete nextMap[id];
+                      const next = { ...categoryMaps, [currentMapKey]: nextMap };
+                      setCategoryMaps(next); persistCategoryMaps(next);
                   }}
                 >- Remove Class</button>
-              </div>
+                  </div>
             )}
-          </div>
+                </div>
           
           {/* Current selected box information */}
           {selectedId && (() => {
@@ -2012,6 +2264,7 @@ const ObjectDetectionTool = () => {
               <option value="yolo_per_image">YOLO per-image (normalized + track id + tags)</option>
             </select>
           </div>
+          
           <button
             onClick={handleAutofillYolov10}
             className="test-button"
