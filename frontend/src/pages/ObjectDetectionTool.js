@@ -135,6 +135,9 @@ const ObjectDetectionTool = () => {
   React.useEffect(() => { frameUrlsRef.current = frameUrls; }, [frameUrls]);
   // Hide boxes on current frame
   const [hideBoxes, setHideBoxes] = React.useState(false);
+  const [visibleWhileHiddenIds, setVisibleWhileHiddenIds] = React.useState({}); // ids of boxes kept visible when hideBoxes is on
+  const [hoveredId, setHoveredId] = React.useState(null); // for hover label display
+  const [lastUsedClassId, setLastUsedClassId] = React.useState(0); // default class for new boxes
   React.useEffect(() => {
     setHideBoxes(false);
     try {
@@ -142,12 +145,15 @@ const ObjectDetectionTool = () => {
       initialSigRef.current[currentFrameIndex] = baseSig;
     } catch {}
   }, [currentFrameIndex]);
-  // If boxes change after verified, mark unverified
+  // If boxes change after verified, mark unverified (ignore transient resets to initial state)
   React.useEffect(() => {
     try {
-      const sig = JSON.stringify(boxes || []);
       const idx = currentFrameIndex;
+      const sig = JSON.stringify(boxes || []);
       const vsig = verifiedSigRef.current[idx];
+      const initSig = initialSigRef.current[idx];
+      // Ignore changes that simply reflect the initial frame state (e.g., image reload timing)
+      if (sig === initSig) return;
       if (verifiedFrames[idx] && vsig != null && sig !== vsig) {
         setVerifiedFrames(prev => ({ ...prev, [idx]: false }));
       }
@@ -795,8 +801,8 @@ const ObjectDetectionTool = () => {
       setPanStart({ x: e.clientX, y: e.clientY, panX, panY });
       return;
     }
-    // Check if on handle
-    if (selectedId) {
+    // Check if on handle; when hideBoxes is on, allow editing only for boxes we keep visible
+    if (selectedId && (!hideBoxes || visibleWhileHiddenIds[selectedId])) {
       const sel = boxes.find(b => b.id === selectedId);
       if (sel) {
         const handle = getHandleAtPoint(sel, x, y);
@@ -815,7 +821,7 @@ const ObjectDetectionTool = () => {
     }
     // Otherwise, start drawing new box
     setMode('drawing');
-    setDrawStart({ x, y });
+    setDrawStart({ x, y, w: 0, h: 0, xMin: x, yMin: y });
   }
 
   function handleImgMouseMove(e) {
@@ -831,15 +837,17 @@ const ObjectDetectionTool = () => {
       return;
     }
     if (mode === 'drawing' && drawStart) {
-      // Preview box
-      const newBox = {
-        id: 'preview',
-        x: Math.min(drawStart.x, x),
-        y: Math.min(drawStart.y, y),
-        w: Math.abs(drawStart.x - x),
-        h: Math.abs(drawStart.y - y),
-      };
-      setBoxes(bs => bs.filter(b => b.id !== 'preview').concat(newBox));
+      // Update in-progress drawing geometry; keep preview independent of existing boxes
+      const xMin = Math.min(drawStart.x, x);
+      const yMin = Math.min(drawStart.y, y);
+      const w = Math.abs(drawStart.x - x);
+      const h = Math.abs(drawStart.y - y);
+      setDrawStart(prev => ({ ...(prev||{ x, y }), xMin, yMin, w, h, x2: x, y2: y }));
+      // Optional legacy preview in boxes only when boxes are visible
+      if (!hideBoxes) {
+        const newBox = { id: 'preview', x: xMin, y: yMin, w, h };
+        setBoxes(bs => bs.filter(b => b.id !== 'preview').concat(newBox));
+      }
     } else if (mode === 'moving' && moveStart) {
       const dx = x - moveStart.x;
       const dy = y - moveStart.y;
@@ -854,6 +862,13 @@ const ObjectDetectionTool = () => {
           ? resizeBox(resizeStart.box, resizeStart.handle, x - resizeStart.x, y - resizeStart.y, info.naturalWidth, info.naturalHeight)
           : b
       ));
+    } else {
+      // idle/hover: compute hovered box for label display
+      const found = [...boxes].reverse().find(b => {
+        if (hideBoxes && !visibleWhileHiddenIds[b.id]) return false;
+        return pointInBox(b, x, y);
+      });
+      setHoveredId(found ? found.id : null);
     }
   }
 
@@ -871,7 +886,7 @@ const ObjectDetectionTool = () => {
       const w = Math.abs(drawStart.x - x);
       const h = Math.abs(drawStart.y - y);
       if (w > 5 && h > 5) {
-        const defaultClassId = 0;
+        const defaultClassId = (typeof lastUsedClassId === 'number') ? lastUsedClassId : 0;
         const newBox = {
           id: Date.now().toString(),
           x: Math.min(drawStart.x, x),
@@ -889,6 +904,9 @@ const ObjectDetectionTool = () => {
           setTimeout(() => saveToHistory('draw', `绘制框 ${newBox.id}`), 0);
           return newBoxes;
         });
+        if (hideBoxes) {
+          setVisibleWhileHiddenIds(prev => ({ ...prev, [newBox.id]: true }));
+        }
         setSelectedId(newBox.id);
         // 不再使用全局计时，默认保持展开直到人为锁定
       } else {
@@ -977,7 +995,10 @@ const ObjectDetectionTool = () => {
     const x = ((e.clientX - info.left) / info.scaleX);
     const y = ((e.clientY - info.top) / info.scaleY);
     // Find topmost box under mouse
-    const found = [...boxes].reverse().find(b => pointInBox(b, x, y));
+    const found = [...boxes].reverse().find(b => {
+      if (hideBoxes && !visibleWhileHiddenIds[b.id]) return false;
+      return pointInBox(b, x, y);
+    });
     if (found) {
       setSelectedId(found.id);
     } else {
@@ -1026,6 +1047,10 @@ const ObjectDetectionTool = () => {
 
   // 全局鼠标事件处理，确保绘制状态正确重置
   React.useEffect(() => {
+    // When un-hiding, clear the temporary whitelist so the next hide hides all
+    if (!hideBoxes) {
+      setVisibleWhileHiddenIds({});
+    }
     const handleGlobalMouseUp = (e) => {
       if (isDrawing) {
         console.log('全局 MouseUp 重置绘制状态'); // 调试日志
@@ -1240,6 +1265,15 @@ const ObjectDetectionTool = () => {
 
 
   const handleExportAnnotations = () => {
+    // Verify gate: if any frame is unverified, confirm before proceeding
+    try {
+      const total = frameUrls.length;
+      const hasUnverified = Array.from({length: total}).some((_,i)=> verifiedFrames[i] !== true);
+      if (hasUnverified) {
+        const ok = window.confirm('Some images are not verified. Continue exporting?');
+        if (!ok) return;
+      }
+    } catch {}
     const csvData = [];
     Object.keys(annotations).forEach(frameIndex => {
       annotations[frameIndex].forEach(annotation => {
@@ -1450,6 +1484,15 @@ const ObjectDetectionTool = () => {
   const [exportFormat, setExportFormat] = useState('combined'); // 'combined' | 'yolo_per_image'
 
   const handleExportFrameBoxesTxt = () => {
+    // Verify gate: if any frame is unverified, confirm before proceeding
+    try {
+      const total = frameUrls.length;
+      const hasUnverified = Array.from({length: total}).some((_,i)=> verifiedFrames[i] !== true);
+      if (hasUnverified) {
+        const ok = window.confirm('Some images are not verified. Continue exporting?');
+        if (!ok) return;
+      }
+    } catch {}
     let lines = [];
     let lastBoxes = [];
     for (let i = 0; i < frameUrls.length; i++) {
@@ -1689,6 +1732,10 @@ const ObjectDetectionTool = () => {
                 <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={loadFromBackup}>Load from backup</button>
                 <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=>{ const payload = buildBackupPayload(); try{ lsSet(`${BACKUP_KEY_PREFIX}${Date.now()}`, encode(payload)); alert('Backup saved'); } catch{ alert('Failed to save backup'); } }}>Backup now</button>
               </div>
+          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'#cfe7ff', marginBottom:8 }}>
+            <input type="checkbox" checked={autoBackupEnabled} onChange={e=> setAutoBackupEnabled(e.target.checked)} />
+            Auto-save progress (local backup)
+          </label>
               <div id="saved-progress-list" style={{ maxHeight: 260, overflowY:'auto', border:'1px solid rgba(39,211,162,0.35)', borderRadius:8, background:'rgba(0,0,0,0.25)' }}>
                 {savedArchives.length === 0 ? (
                   <div style={{ padding:10, color:'#9fbac9' }}>No archives yet</div>
@@ -1827,25 +1874,17 @@ const ObjectDetectionTool = () => {
                       <button
                         className="test-button"
                         onClick={() => { const idx = currentFrameIndex; verifiedSigRef.current[idx] = JSON.stringify(boxes || []); setVerifiedFrames(prev=>({ ...prev, [idx]: true })); initialSigRef.current[idx] = JSON.stringify(boxes || []); }}
-                        style={{ padding:'4px 12px', fontSize:12, minWidth:96, background:'#00ff96', color:'#002', border:'none', borderRadius:8 }}
+                        style={{ height:32, padding:'4px 10px', fontSize:11, minWidth:110, background:'#00ff96', color:'#002', border:'none', borderRadius:10, fontWeight:700, display:'inline-flex', alignItems:'center', justifyContent:'center', whiteSpace:'nowrap', lineHeight:1 }}
                         title="Mark current image as verified"
-                      >VERIFY</button>
+                      >VERIFY CHANGES</button>
                       {dataSource === 'local' && (
-                        <button className="test-button" onClick={deleteCurrentLocalImage} title="Delete current image (local only)" style={{ padding:'4px 12px', fontSize:12, minWidth:96, background:'#ff4d4f', color:'#fff', border:'none', borderRadius:8 }}>
+                        <button className="test-button" onClick={deleteCurrentLocalImage} title="Delete current image (local only)" style={{ height:32, padding:'4px 10px', fontSize:11, minWidth:110, background:'#ff4d4f', color:'#fff', border:'none', borderRadius:10, fontWeight:700, display:'inline-flex', alignItems:'center', justifyContent:'center', whiteSpace:'nowrap', lineHeight:1 }}>
                           DELETE IMAGE
                         </button>
                       )}
                       <button
                         className="test-button"
                         onClick={() => {
-                          const idx = currentFrameIndex;
-                          const currentSig = JSON.stringify(boxes || []);
-                          const baseSig = initialSigRef.current[idx] || JSON.stringify(frameBoxes[idx] || []);
-                          const modified = currentSig !== baseSig;
-                          if (modified && !verifiedFrames[idx]) {
-                            const ok = window.confirm('This image has unverified changes. Continue without verifying?');
-                            if (!ok) return;
-                          }
                           setCurrentFrameIndex(i => Math.max(0, i - 1));
                         }}
                         disabled={currentFrameIndex === 0}
@@ -1857,14 +1896,6 @@ const ObjectDetectionTool = () => {
                       <button
                         className="test-button"
                         onClick={() => {
-                          const idx = currentFrameIndex;
-                          const currentSig = JSON.stringify(boxes || []);
-                          const baseSig = initialSigRef.current[idx] || JSON.stringify(frameBoxes[idx] || []);
-                          const modified = currentSig !== baseSig;
-                          if (modified && !verifiedFrames[idx]) {
-                            const ok = window.confirm('This image has unverified changes. Continue without verifying?');
-                            if (!ok) return;
-                          }
                           setCurrentFrameIndex(i => Math.min(frameUrls.length - 1, i + 1));
                         }}
                         disabled={currentFrameIndex === frameUrls.length - 1}
@@ -1896,7 +1927,7 @@ const ObjectDetectionTool = () => {
                       borderRadius: 0,
                       userSelect: 'none',
                       overflow: 'hidden',
-                      cursor: mode === 'drawing' ? 'crosshair' : 'default',
+                        cursor: mode === 'panning' ? 'grabbing' : (mode === 'drawing' ? 'crosshair' : 'default'),
                       display: 'block',
                     }}
                     onMouseDown={handleImgMouseDown}
@@ -1907,6 +1938,7 @@ const ObjectDetectionTool = () => {
                     onClick={handleCanvasClick}
                   onWheel={handleWheel} // 添加滚轮缩放事件
                   onContextMenu={(e)=> e.preventDefault()} // 右键拖拽时禁用菜单
+                  onMouseLeave={()=> setHoveredId(null)}
                   >
                     {/* 图片层 */}
                     {frameUrls[currentFrameIndex] && (
@@ -1935,12 +1967,14 @@ const ObjectDetectionTool = () => {
                       />
                     )}
                     {/* bounding box 层 */}
-                    {hideBoxes ? null : (() => {
+                    {(() => {
                       const info = getImgInfo();
                       if (!info) return null;
-                      return boxes.map(box => {
+                      const renderList = hideBoxes ? boxes.filter(b => !!visibleWhileHiddenIds[b.id]) : boxes;
+                      return renderList.map(box => {
                         const baseColor = colorForBox(box);
                         const isSelected = box.id === selectedId;
+                        const isHovered = box.id === hoveredId;
                         const strokeColor = isSelected ? SELECTED_COLOR : baseColor;
                         const stroke = `2px solid ${strokeColor}`;
                         const fill = isSelected ? rgbaFromHex(SELECTED_COLOR, 0.15) : rgbaFromHex(baseColor, 0.10);
@@ -1954,41 +1988,47 @@ const ObjectDetectionTool = () => {
                         return (
                           <div key={box.id} style={{ position: 'absolute', left, top, width, height, zIndex: 10, pointerEvents: 'none' }}>
                             <div style={{ position: 'absolute', inset: 0, border: stroke, background: fill }} />
-                          <div
-                            style={{
-                              position: 'absolute',
-                                left: 0,
-                                top: -18,
-                                background: strokeColor,
-                                color: '#000',
-                                padding: '2px 6px',
-                                borderRadius: 4,
-                                fontSize: 11,
-                                fontWeight: 600,
-                                lineHeight: '12px',
-                                maxWidth: '100%',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >{labelText}</div>
+                            {(isHovered || isSelected) && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  left: 0,
+                                  top: -18,
+                                  background: strokeColor,
+                                  color: '#000',
+                                  padding: '2px 6px',
+                                  borderRadius: 4,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  lineHeight: '12px',
+                                  maxWidth: '100%',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >{labelText}</div>
+                            )}
                           </div>
                         );
                       });
                     })()}
-                    {/* Current drawing box */}
+                    {/* Current drawing box (always visible while dragging, even when hideBoxes is on) */}
                     {drawStart && (() => {
                       const info = getImgInfo();
                       if (!info) return null;
                       const scaleX = info.scaleX, scaleY = info.scaleY;
+                      const leftPx = (drawStart.xMin ?? drawStart.x) * scaleX + info.offsetX;
+                      const topPx = (drawStart.yMin ?? drawStart.y) * scaleY + info.offsetY;
+                      const widthPx = Math.max(1, (drawStart.w ?? 0) * scaleX);
+                      const heightPx = Math.max(1, (drawStart.h ?? 0) * scaleY);
                       return (
                         <div
                           style={{
                             position: 'absolute',
-                            left: `${drawStart.x * scaleX + info.offsetX}px`,
-                            top: `${drawStart.y * scaleY + info.offsetY}px`,
-                            width: `${Math.abs(drawStart.x - (drawStart.x + drawStart.w)) * scaleX}px`,
-                            height: `${Math.abs(drawStart.y - (drawStart.y + drawStart.h)) * scaleY}px`,
+                            left: `${leftPx}px`,
+                            top: `${topPx}px`,
+                            width: `${widthPx}px`,
+                            height: `${heightPx}px`,
                             border: '2px dashed #00ff96',
                             background: 'rgba(0,255,150,0.08)',
                             zIndex: 11,
@@ -1997,8 +2037,32 @@ const ObjectDetectionTool = () => {
                         />
                       );
                     })()}
-                    
-                    
+                    {/* Legend: color ↔ class name; click to set default class */}
+                    {(() => {
+                      // Only show classes present in current frame boxes
+                      const ids = Array.from(new Set((boxes || []).map(b => (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1)).filter(id => id >= 0)));
+                      if (!ids.length) return null;
+                      const entries = ids.map(id => [String(id), classIdToName[id]]).filter(([,name]) => !!name);
+                      if (!entries.length) return null;
+                      return (
+                        <div onWheel={(e)=> e.stopPropagation()} style={{ position:'absolute', right:10, top:10, background:'rgba(0,0,0,0.45)', border:'1px solid rgba(255,255,255,0.2)', borderRadius:8, padding:'8px 10px', zIndex:12 }}>
+                          <div style={{ color:'#cfe7ff', fontSize:11, marginBottom:6 }}>Legend (click to set default)</div>
+                          <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', rowGap:6, columnGap:8 }}>
+                            {entries.map(([id, name]) => {
+                              const color = classIdToColor[Number(id)] || '#00ff96';
+                              const active = Number(id) === lastUsedClassId;
+                              return (
+                                <React.Fragment key={id}>
+                                  <div onClick={()=> setLastUsedClassId(Number(id))} title={`Set default: ${name}`} style={{ width:14, height:14, borderRadius:3, background:color, border: active ? '2px solid #fff' : '1px solid rgba(255,255,255,0.5)', cursor:'pointer' }} />
+                                  <div onClick={()=> setLastUsedClassId(Number(id))} style={{ color:'#eaf6ff', fontSize:11, cursor:'pointer', opacity: active ? 1 : 0.9 }}>{id} · {name}</div>
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                   </div>
                 </div>
                 {/* Pagination + progress moved to top bar */}
@@ -2035,7 +2099,7 @@ const ObjectDetectionTool = () => {
         {/* Right Panel: Annotation Panel */}
         <div className="selected-points-container">
             <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8, gap:6 }}>
-              <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=> setSaveModalOpen(true)}>Save</button>
+          <button className="test-button" style={{ padding:'4px 8px', fontSize:12 }} onClick={()=> setSaveModalOpen(true)}>Save Progress</button>
           </div>
           {/* ...右侧 annotation panel 内容，全部用 AnnotationTool.js 的 className ... */}
           {/* Annotation instructions removed as requested */}
@@ -2169,6 +2233,7 @@ const ObjectDetectionTool = () => {
                       const clsId = Number(e.target.value);
                       const label = classIdToName[clsId] || '';
                       setBoxes(bs => bs.map(b => b.id === selectedId ? { ...b, classId: clsId, label } : b));
+                      setLastUsedClassId(clsId);
                       // 保存标签更改到历史记录
                       setTimeout(() => saveToHistory('label', `更改框 ${selectedId} 类别为 ${clsId}:${label}`), 0);
                     }}
