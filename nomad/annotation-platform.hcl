@@ -132,7 +132,7 @@ job "annotation-platform" {
 
       # Inject external inference server base URL
       env {
-        INFERENCE_BASE = "http://44.254.122.29:8085"
+        INFERENCE_BASE = "http://54.68.86.237:8085"
       }
 
       template {

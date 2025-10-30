@@ -138,6 +138,13 @@ const ObjectDetectionTool = () => {
   const [visibleWhileHiddenIds, setVisibleWhileHiddenIds] = React.useState({}); // ids of boxes kept visible when hideBoxes is on
   const [hoveredId, setHoveredId] = React.useState(null); // for hover label display
   const [lastUsedClassId, setLastUsedClassId] = React.useState(0); // default class for new boxes
+  const isSwitchingFrameRef = React.useRef(false);
+  // When un-hiding, clear whitelist so the next hide hides all boxes (old and newly drawn)
+  React.useEffect(() => {
+    if (!hideBoxes) {
+      setVisibleWhileHiddenIds({});
+    }
+  }, [hideBoxes]);
   React.useEffect(() => {
     setHideBoxes(false);
     try {
@@ -145,20 +152,17 @@ const ObjectDetectionTool = () => {
       initialSigRef.current[currentFrameIndex] = baseSig;
     } catch {}
   }, [currentFrameIndex]);
-  // If boxes change after verified, mark unverified (ignore transient resets to initial state)
+  // If persisted frameBoxes change after verified, mark unverified
   React.useEffect(() => {
     try {
       const idx = currentFrameIndex;
-      const sig = JSON.stringify(boxes || []);
+      const sig = JSON.stringify(frameBoxes[idx] || []);
       const vsig = verifiedSigRef.current[idx];
-      const initSig = initialSigRef.current[idx];
-      // Ignore changes that simply reflect the initial frame state (e.g., image reload timing)
-      if (sig === initSig) return;
       if (verifiedFrames[idx] && vsig != null && sig !== vsig) {
         setVerifiedFrames(prev => ({ ...prev, [idx]: false }));
       }
     } catch {}
-  }, [boxes, currentFrameIndex]);
+  }, [frameBoxes, currentFrameIndex]);
   // Delete current image (local only): remove frameUrls/current image, reindex boxes/annotations/tags
   function deleteCurrentLocalImage() {
     if (dataSource !== 'local') { alert('Delete is available for local folder only.'); return; }
@@ -617,6 +621,7 @@ const ObjectDetectionTool = () => {
 
   // 切换帧时，自动加载 boxes
   React.useEffect(() => {
+    isSwitchingFrameRef.current = true;
     // 延迟到下一次绘制，保证 <img> onLoad 已触发（避免尺寸尚未就绪时计算 overlay）
     const handle = requestAnimationFrame(() => {
       if (frameBoxes[currentFrameIndex]) {
@@ -646,6 +651,8 @@ const ObjectDetectionTool = () => {
       setZoom(1);
       setPanX(0);
       setPanY(0);
+      // 结束切换标记
+      setTimeout(() => { isSwitchingFrameRef.current = false; }, 0);
     });
     return () => cancelAnimationFrame(handle);
     // eslint-disable-next-line
@@ -653,6 +660,7 @@ const ObjectDetectionTool = () => {
 
   // boxes 变化时，自动保存到 frameBoxes
   React.useEffect(() => {
+    if (isSwitchingFrameRef.current) return;
     setFrameBoxes(prev => ({ ...prev, [currentFrameIndex]: boxes }));
     // eslint-disable-next-line
   }, [boxes, currentFrameIndex]);
