@@ -29,6 +29,7 @@ const ObjectDetectionTool = () => {
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [isLoadingFrames, setIsLoadingFrames] = useState(false);
   const [isAutoDetecting, setIsAutoDetecting] = useState(false);
+  const [frameDims, setFrameDims] = useState({}); // { index: { width, height, name } }
   
   // 标注相关状态
   const [boundingBoxes, setBoundingBoxes] = useState({}); // {frameIndex: [boxes]}
@@ -679,6 +680,16 @@ const ObjectDetectionTool = () => {
     img.onload = () => {
       setNaturalWidth(img.naturalWidth);
       setNaturalHeight(img.naturalHeight);
+      // cache per-frame dimensions and name for export
+      try {
+        const name = (() => {
+          if (dataSource === 'local' && localImageList[currentFrameIndex]?.name) return localImageList[currentFrameIndex].name;
+          const u = frameUrls[currentFrameIndex];
+          const q = (u||'').split('?')[0];
+          return (q.split('/').pop() || `frame_${currentFrameIndex.toString().padStart(4,'0')}.jpg`);
+        })();
+        setFrameDims(prev => ({ ...prev, [currentFrameIndex]: { width: img.naturalWidth, height: img.naturalHeight, name } }));
+      } catch {}
     };
     img.src = frameUrls[currentFrameIndex];
   }, [frameUrls, currentFrameIndex]);
@@ -854,7 +865,7 @@ const ObjectDetectionTool = () => {
       // Optional legacy preview in boxes only when boxes are visible
       if (!hideBoxes) {
         const newBox = { id: 'preview', x: xMin, y: yMin, w, h };
-        setBoxes(bs => bs.filter(b => b.id !== 'preview').concat(newBox));
+      setBoxes(bs => bs.filter(b => b.id !== 'preview').concat(newBox));
       }
     } else if (mode === 'moving' && moveStart) {
       const dx = x - moveStart.x;
@@ -1489,26 +1500,25 @@ const ObjectDetectionTool = () => {
   const classToLabel = classId => classIdToName[classId] || '';
 
   // 导出为TXT
-  const [exportFormat, setExportFormat] = useState('combined'); // 'combined' | 'yolo_per_image'
+  const [exportFormat, setExportFormat] = useState('yolo_per_image'); // 'combined' | 'yolo_per_image'
+  const [exportConfirmOpen, setExportConfirmOpen] = useState(false);
 
-  const handleExportFrameBoxesTxt = () => {
-    // Verify gate: if any frame is unverified, confirm before proceeding
-    try {
-      const total = frameUrls.length;
-      const hasUnverified = Array.from({length: total}).some((_,i)=> verifiedFrames[i] !== true);
-      if (hasUnverified) {
-        const ok = window.confirm('Some images are not verified. Continue exporting?');
-        if (!ok) return;
-      }
-    } catch {}
+  const handleExportFrameBoxesTxt = ({ verifiedOnly = false } = {}) => {
     let lines = [];
     let lastBoxes = [];
-    for (let i = 0; i < frameUrls.length; i++) {
+    const indices = verifiedOnly
+      ? Array.from({ length: frameUrls.length }).map((_,i)=>i).filter(i=> verifiedFrames[i] === true)
+      : Array.from({ length: frameUrls.length }).map((_,i)=>i);
+    for (const i of indices) {
       let boxes = frameBoxes[i];
+      if (!verifiedOnly) {
       if (!boxes || boxes.length === 0) {
         boxes = lastBoxes; // 用上一帧的
       } else {
         lastBoxes = boxes;
+        }
+      } else {
+        if (!boxes) boxes = [];
       }
       (boxes || []).forEach(box => {
         const classnumber = (typeof box.classId === 'number') ? box.classId : (nameToClassId[box.label] ?? -1);
@@ -1529,10 +1539,15 @@ const ObjectDetectionTool = () => {
           await writable.close();
           alert('Exported to selected folder');
           return true;
-        } catch (e) { return false; }
+        } catch (e) {
+          // On cancel or protected system folder, fall back to browser download to default Downloads
+          if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return false;
+          if (String(e?.message || '').includes('contains system files')) return false;
+          return false;
+        }
       };
       tryFolder().then(done => {
-        if (done) return;
+        if (done === true) return;
       const blob = new Blob([txtContent], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1541,59 +1556,51 @@ const ObjectDetectionTool = () => {
       a.click();
       });
     } else {
-      const exportToFolder = async () => {
-        if (!window.showDirectoryPicker) return false;
-        try {
-          const dir = await window.showDirectoryPicker();
-          for (let i = 0; i < frameUrls.length; i++) {
-            const it = localImageList[i];
-            const boxes = frameBoxes[i] || [];
-            if (!it) continue;
-            const tagsStr = String(frameTags[i] || '').trim();
-            const linesTxt = boxes.map(b => {
-              const cls = (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1);
-              const cx = (b.x + b.w / 2) / it.width;
-              const cy = (b.y + b.h / 2) / it.height;
-              const ww = b.w / it.width;
-              const hh = b.h / it.height;
-              const base = `${cls} ${cx.toFixed(6)} ${cy.toFixed(6)} ${ww.toFixed(6)} ${hh.toFixed(6)}`;
-              const withTrack = `${base} ${b.trackingId || -1}`;
-              return tagsStr ? `${withTrack} ${tagsStr}` : withTrack;
-            }).join('\n');
-            const fh = await dir.getFileHandle(`${stem(it.name)}.txt`, { create: true });
-            const w = await fh.createWritable();
-            await w.write(linesTxt);
-            await w.close();
-          }
-          alert('Exported YOLO labels to selected folder');
-          return true;
-        } catch (e) { return false; }
-      };
-      exportToFolder().then(done => {
-        if (done) return;
-        // fallback: YOLO per-image export: bundle all .txt into one ZIP
+      // Always produce a single ZIP file for YOLO per-image export
+      (async () => {
       const zip = new JSZip();
-      for (let i = 0; i < frameUrls.length; i++) {
-        const it = localImageList[i];
-        const boxes = frameBoxes[i] || [];
-        if (!it) continue;
+        const indices = verifiedOnly
+          ? Array.from({ length: frameUrls.length }).map((_,i)=>i).filter(i=> verifiedFrames[i] === true)
+          : Array.from({ length: frameUrls.length }).map((_,i)=>i);
+        for (const i of indices) {
+          const isLocal = dataSource === 'local';
+          const it = isLocal ? localImageList[i] : (frameDims[i] ? { name: frameDims[i].name, width: frameDims[i].width, height: frameDims[i].height } : null);
+          const boxes = frameBoxes[i] || [];
+          if (!it) continue;
         const tagsStr = String(frameTags[i] || '').trim();
         const linesTxt = boxes.map(b => {
           const cls = (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1);
-          const cx = (b.x + b.w / 2) / it.width;
-          const cy = (b.y + b.h / 2) / it.height;
-          const ww = b.w / it.width;
-          const hh = b.h / it.height;
+            const cx = (b.x + b.w / 2) / (it.width || naturalWidth);
+            const cy = (b.y + b.h / 2) / (it.height || naturalHeight);
+            const ww = b.w / (it.width || naturalWidth);
+            const hh = b.h / (it.height || naturalHeight);
           const base = `${cls} ${cx.toFixed(6)} ${cy.toFixed(6)} ${ww.toFixed(6)} ${hh.toFixed(6)}`;
           const withTrack = `${base} ${b.trackingId || -1}`;
           return tagsStr ? `${withTrack} ${tagsStr}` : withTrack;
         }).join('\n');
-        zip.file(`${stem(it.name)}.txt`, linesTxt);
+          const fname = it.name || (()=>{ const u=(frameUrls[i]||'').split('?')[0]; return (u.split('/').pop() || `frame_${i.toString().padStart(4,'0')}.jpg`); })();
+          zip.file(`${stem(fname)}.txt`, linesTxt);
       }
-      zip.generateAsync({ type: 'blob' }).then((blob) => {
+        const blob = await zip.generateAsync({ type: 'blob' });
+        try {
+          if (window.showSaveFilePicker) {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: 'annotations_yolo.zip',
+              types: [{ description: 'ZIP Files', accept: { 'application/zip': ['.zip'] } }]
+            });
+            const w = await handle.createWritable();
+            await w.write(blob);
+            await w.close();
+            alert('Exported ZIP to selected location');
+            return;
+          }
+        } catch (e) {
+          // user canceled → just return
+          if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return;
+        }
+        // fallback: browser download to default Downloads
         saveAs(blob, 'annotations_yolo.zip');
-        });
-      });
+      })();
     }
   };
 
@@ -1997,9 +2004,9 @@ const ObjectDetectionTool = () => {
                           <div key={box.id} style={{ position: 'absolute', left, top, width, height, zIndex: 10, pointerEvents: 'none' }}>
                             <div style={{ position: 'absolute', inset: 0, border: stroke, background: fill }} />
                             {(isHovered || isSelected) && (
-                              <div
-                                style={{
-                                  position: 'absolute',
+                          <div
+                            style={{
+                              position: 'absolute',
                                   left: 0,
                                   top: -18,
                                   background: strokeColor,
@@ -2046,13 +2053,13 @@ const ObjectDetectionTool = () => {
                       );
                     })()}
                     {/* Legend: color ↔ class name; click to set default class */}
-                    {(() => {
+                  {(() => {
                       // Only show classes present in current frame boxes
                       const ids = Array.from(new Set((boxes || []).map(b => (typeof b.classId === 'number') ? b.classId : (nameToClassId[b.label] ?? -1)).filter(id => id >= 0)));
                       if (!ids.length) return null;
                       const entries = ids.map(id => [String(id), classIdToName[id]]).filter(([,name]) => !!name);
                       if (!entries.length) return null;
-                      return (
+                    return (
                         <div onWheel={(e)=> e.stopPropagation()} style={{ position:'absolute', right:10, top:10, background:'rgba(0,0,0,0.45)', border:'1px solid rgba(255,255,255,0.2)', borderRadius:8, padding:'8px 10px', zIndex:12 }}>
                           <div style={{ color:'#cfe7ff', fontSize:11, marginBottom:6 }}>Legend (click to set default)</div>
                           <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', rowGap:6, columnGap:8 }}>
@@ -2067,11 +2074,11 @@ const ObjectDetectionTool = () => {
                               );
                             })}
                           </div>
-                        </div>
-                      );
-                    })()}
+                      </div>
+                    );
+                  })()}
 
-                  </div>
+                </div>
                 </div>
                 {/* Pagination + progress moved to top bar */}
                 </>
@@ -2363,7 +2370,12 @@ const ObjectDetectionTool = () => {
             Export Annotations (CSV)
           </button>
           <button
-            onClick={handleExportFrameBoxesTxt}
+            onClick={() => {
+              const total = frameUrls.length;
+              const hasUnverified = Array.from({length: total}).some((_,i)=> verifiedFrames[i] !== true);
+              if (hasUnverified) { setExportConfirmOpen(true); return; }
+              handleExportFrameBoxesTxt({ verifiedOnly: false });
+            }}
             style={{
               width: '100%',
               padding: '8px 12px',
@@ -2379,6 +2391,20 @@ const ObjectDetectionTool = () => {
           >
             Export
           </button>
+          {exportConfirmOpen && ReactDOM.createPortal(
+            <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:99999 }}>
+              <div style={{ position:'fixed', left:'50%', top:'50%', transform:'translate(-50%, -50%)', background:'#0d2540', padding:20, borderRadius:12, width:420, maxWidth:'90vw', color:'#fff', boxShadow:'0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08)' }}>
+                <div style={{ fontWeight:700, marginBottom:12 }}>Some images are not verified</div>
+                <div style={{ fontSize:12, color:'#cfe7ff', marginBottom:12 }}>Choose what to export:</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                  <button className="test-button" onClick={()=>{ setExportConfirmOpen(false); handleExportFrameBoxesTxt({ verifiedOnly:false }); }} style={{ background:'#00bfff' }}>Export all</button>
+                  <button className="test-button" onClick={()=>{ setExportConfirmOpen(false); handleExportFrameBoxesTxt({ verifiedOnly:true }); }} style={{ background:'#00ff96', color:'#002' }}>Export verified only</button>
+                  <button className="test-button" onClick={()=> setExportConfirmOpen(false)} style={{ background:'#3b3b3b' }}>Cancel</button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
           <button
             onClick={() => setShowImport(true)}
             style={{
